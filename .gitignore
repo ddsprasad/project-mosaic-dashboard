@@ -1,0 +1,23 @@
+# dependencies / build output
+**/node_modules/
+**/dist/
+**/.vite/
+
+# logs
+*.log
+npm-debug.log*
+
+# editor / OS / tooling
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.claude/
+
+# secrets / credentials
+.env
+.env.*
+*.key
+*.pem
+service-account*.json
+gcp-credentials*.json
