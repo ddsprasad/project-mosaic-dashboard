@@ -1,0 +1,82 @@
+{
+  "total-sift-objects": {
+    "label": "TOTAL SIFT OBJECTS",
+    "field": "value",
+    "sql": "SELECT COUNT(*) AS value FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source != 'glean' AND is_dir = false"
+  },
+  "total-exfil-files": {
+    "label": "TOTAL EXFIL FILES",
+    "field": "total_count",
+    "sql": "SELECT ((SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source = 'gcp_buckets' AND is_dir = false) + (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source = 'bigquery' AND is_dir = false)) AS total_count"
+  },
+  "sift-objects-bq-gcs": {
+    "label": "SIFT OBJECTS IN BQ AND GCS",
+    "field": "total_count",
+    "sql": "SELECT ((SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source = 'gcp_buckets' AND is_dir = false) + (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source = 'bigquery' AND is_dir = false)) AS total_count"
+  },
+  "sift-other-objects": {
+    "label": "SIFT OTHER OBJECTS",
+    "field": "value",
+    "sql": "SELECT COUNT(*) AS value FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source != 'glean' AND source NOT IN ('gcp_buckets','bigquery') AND is_dir = false"
+  },
+  "preservation-files": {
+    "label": "PRESERVATION FILES",
+    "field": "total_count",
+    "sql": "SELECT COUNT(*) AS total_count FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.datalakeuniverse_v1`"
+  },
+  "preservation-total": {
+    "label": "PRESERVATION TOTAL",
+    "field": "total_count",
+    "sql": "SELECT (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files`) + (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table') AS total_count"
+  },
+  "files-for-harvesting": {
+    "label": "FILES FOR HARVESTING",
+    "field": "total_count",
+    "sql": "SELECT (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE has_sift_match = true) + (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows > 0 AND sift_match = true) AS total_count"
+  },
+  "duplicates": {
+    "label": "DUPLICATES",
+    "field": "duplicate_count",
+    "sql": "SELECT COUNT(*) - COUNT(DISTINCT MD5Hex) AS duplicate_count FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE has_sift_match = true"
+  },
+  "exclusions-bq": {
+    "label": "EXCLUSIONS",
+    "field": "value",
+    "sql": "SELECT ((SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows = 0) + (SELECT COUNT(*) FROM (SELECT MD5Hex FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE extension IS NULL AND has_sift_match = TRUE QUALIFY ROW_NUMBER() OVER (PARTITION BY MD5Hex ORDER BY CreationDate ASC) = 1))) AS value"
+  },
+  "pending-extraction": {
+    "label": "PENDING FOR EXTRACTION",
+    "field": "final_count",
+    "sql": "SELECT (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE has_sift_match = true) + (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows > 0 AND sift_match = true) - (SELECT COUNT(*) - COUNT(DISTINCT MD5Hex) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE has_sift_match = true) - (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows = 0) - (SELECT COUNT(*) FROM (SELECT MD5Hex FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE extension IS NULL AND has_sift_match = TRUE QUALIFY ROW_NUMBER() OVER (PARTITION BY MD5Hex ORDER BY CreationDate ASC) = 1)) AS final_count"
+  },
+  "bq-files": {
+    "label": "BQ FILES",
+    "field": "value",
+    "sql": "SELECT COUNT(*) AS value FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows > 0 AND exclusion_flag IS NULL AND sift_match = true"
+  },
+  "gcs-files": {
+    "label": "GCS FILES",
+    "field": "final_count",
+    "sql": "SELECT (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE has_sift_match = true) + (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows > 0 AND sift_match = true) - (SELECT COUNT(*) - COUNT(DISTINCT MD5Hex) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE has_sift_match = true) - (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows = 0) - (SELECT COUNT(*) FROM (SELECT MD5Hex FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.gcs_files_enriched` WHERE extension IS NULL AND has_sift_match = TRUE QUALIFY ROW_NUMBER() OVER (PARTITION BY MD5Hex ORDER BY CreationDate ASC) = 1)) - (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.datalakeuniverse_pr_bg_tbl` WHERE table_type = 'base table' AND total_rows > 0 AND exclusion_flag IS NULL AND sift_match = true) AS final_count"
+  },
+  "data-complexion": {
+    "label": "DATA COMPLEXION",
+    "rows": { "name": "pii_relevant", "value": "pii_count" },
+    "sql": "SELECT pii_relevant, COUNT(pii_relevant) AS pii_count FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.pr_bg_column_mapping_enriched` a JOIN `cio-mosaic-analytics-pr-853ae3.preservation_data.pr_bg_raw_tbl_enriched` b ON a.md5 = b.md5 GROUP BY pii_relevant HAVING COUNT(pii_relevant) > 0"
+  },
+  "raw-records": {
+    "label": "RAW RECORDS",
+    "field": "value",
+    "sql": "SELECT COUNT(*) AS value FROM `cio-mosaic-analytics-pr-853ae3.preservation_data.pr_bg_raw_tbl_enriched`"
+  },
+  "file-profiling": {
+    "label": "FILE PROFILING",
+    "fields": ["Total Files", "Deleted In TI", "Duplicates", "Exclusions", "Files For Harvesting", "Pending Preservation"],
+    "sql": "SELECT `Total Files`, `Deleted In TI`, `Duplicates`, `Exclusions`, `Files For Harvesting`, `Total Files` - `Deleted In TI` - `Duplicates` - `Exclusions` - `Files For Harvesting` AS `Pending Preservation` FROM (SELECT (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source != 'glean' AND is_dir = false) AS `Total Files`, (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE deleted_in_ti IS NOT NULL) AS `Deleted In TI`, (SELECT COUNT(*) - COUNT(DISTINCT MD5Hex) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.datalakeuniverse_v1` WHERE has_sift_match) AS `Duplicates`, (SELECT COUNT(*) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.datalakeuniverse_v1` WHERE Size = 0 AND has_sift_match) AS `Exclusions`, (SELECT COUNT(DISTINCT MD5Hex) FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.datalakeuniverse_v1` WHERE Size > 0 AND has_sift_match) AS `Files For Harvesting`) AS metrics"
+  },
+  "file-distribution": {
+    "label": "FILE DISTRIBUTION",
+    "rows": { "name": "category", "value": "count" },
+    "sql": "SELECT CASE WHEN LOWER(extension) IN ('.avro','.csv','.parquet','.xlsx','.sql','.dtsx','.xls','.tsv') THEN 'Structured' WHEN LOWER(extension) IN ('.json','.json.gz','.xml','.html','.htm','.ipynb','.jsonl','.yaml') THEN 'Semi-Structured' WHEN LOWER(extension) IN ('.pdf','.jpg','.jpeg','.txt','.png','.mp4','.mp3','.log','.opus') THEN 'Unstructured' ELSE 'System / Other' END AS category, COUNT(DISTINCT md5hex) AS count FROM `cio-mosaic-analytics-pr-853ae3.gcs_discovery.datalakeuniverse_v1` WHERE has_sift_match = true GROUP BY category ORDER BY count DESC"
+  }
+}
