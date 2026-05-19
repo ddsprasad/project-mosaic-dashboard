@@ -14,7 +14,11 @@ const CACHE_TTL_MS = 60_000
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STATIC_DIR = process.env.STATIC_DIR || path.join(__dirname, '..', 'dashboard', 'dist')
 
-const bq = new BigQuery({ projectId: PROJECT_ID, authClient: new GcloudCliAuthClient() })
+const isCloudRun = !!process.env.K_SERVICE
+const bq = new BigQuery({
+  projectId: PROJECT_ID,
+  ...(isCloudRun ? {} : { authClient: new GcloudCliAuthClient() }),
+})
 const cache = new Map()
 
 const app = express()

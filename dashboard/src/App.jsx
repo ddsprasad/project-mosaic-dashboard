@@ -367,7 +367,7 @@ function BurndownTree({
 function BurndownBars({ rows, max }) {
   const denom = max || 1
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1, minHeight: 0, justifyContent: 'center' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, flex: 1, minHeight: 0, justifyContent: 'center' }}>
       {rows.map((r, i) => {
         const val = r.kpi?.value
         const ready = val != null && Number.isFinite(val)
@@ -385,6 +385,9 @@ function BurndownBars({ rows, max }) {
             >
               <div style={{ height: '100%', width: `${pct}%`, background: r.color, borderRadius: 99, transition: 'width .6s ease' }} />
             </div>
+            {r.note && (
+              <div style={{ color: '#22c55e', fontSize: 10, marginTop: 2 }}>{r.note}</div>
+            )}
           </div>
         )
       })}
@@ -458,10 +461,11 @@ function FileProfiling({ refreshKey }) {
   })
   const totalFiles = mk('Total Files')
   const barRows = [
-    { label: 'Total Files',          kpi: totalFiles,                 color: '#5b21b6' },
-    { label: 'Files Not Found in TI', kpi: mk('Deleted In TI'),        color: '#6b7280' },
+    { label: 'Total Files',          kpi: totalFiles,                 color: '#5b21b6', note: '~100K compressed' },
+    { label: 'Files Deleted in TI (confirmed with TELUS team)', kpi: mk('Deleted In TI'),        color: '#6b7280' },
     { label: 'Duplicates',           kpi: mk('Duplicates'),           color: '#f59e0b' },
     { label: 'Exclusions',           kpi: mk('Exclusions'),           color: '#fb7185' },
+    { label: 'Potential Exclusions (Pending Confirmation)', kpi: mk('Potential Exclusions'), color: '#f97316' },
     { label: 'Files For Harvesting', kpi: mk('Files For Harvesting'), color: '#22c55e' },
     { label: 'Pending Preservation', kpi: mk('Pending Preservation'), color: '#d946ef' },
   ]
@@ -472,10 +476,11 @@ function FileProfiling({ refreshKey }) {
   const distTotal = distRows.reduce((s, r) => s + (Number(r.value) || 0), 0)
   const distPct = (n) => distTotal > 0 ? (n || 0) / distTotal * 100 : 0
   const dist = [
-    { label: 'Structured',     pct: distPct(distMap['Structured']),     color: C.purple },
-    { label: 'Semi-Structured', pct: distPct(distMap['Semi-Structured']), color: C.blue },
-    { label: 'Unstructured',   pct: distPct(distMap['Unstructured']),   color: C.teal },
-    { label: 'System / Other', pct: distPct(distMap['System / Other']), color: C.orange },
+    { label: 'Structured',                      count: distMap['Structured'] || 0,                      pct: distPct(distMap['Structured']),                      color: C.purple },
+    { label: 'Unstructured',                    count: distMap['Unstructured'] || 0,                    pct: distPct(distMap['Unstructured']),                    color: C.teal },
+    { label: 'Media Files',                     count: distMap['Media Files'] || 0,                     pct: distPct(distMap['Media Files']),                     color: C.orange },
+    { label: 'Semi Structured/Technical Docs',  count: distMap['Semi Structured/Technical Docs'] || 0,  pct: distPct(distMap['Semi Structured/Technical Docs']),  color: C.blue },
+    { label: 'Others',                          count: distMap['Others'] || 0,                          pct: distPct(distMap['Others']),                          color: C.gray },
   ]
 
   return (
@@ -498,22 +503,28 @@ function FileProfiling({ refreshKey }) {
       <div className="dist-section">
         <div className="dist-head">
           <span className="dist-title">FILE DISTRIBUTION</span>
-          <span className="muted-small">
-            {distKpi.loading ? 'loading…' : distKpi.error ? 'error' : `of ${formatCompact(distTotal)} files`}
-          </span>
         </div>
         <div className="dist-bar">
           {dist.map(d => (
-            <div key={d.label} style={{ width: `${Math.max(1, d.pct)}%`, background: d.color }} />
+            <div
+              key={d.label}
+              style={{ width: `${Math.max(1, d.pct)}%`, background: d.color, cursor: 'help' }}
+              title={`${d.label}: ${d.count.toLocaleString()} (${d.pct.toFixed(1)}%)`}
+            />
           ))}
         </div>
         <div className="dist-legend">
           {dist.map(d => (
-            <div key={d.label} className="dl-row">
+            <div
+              key={d.label}
+              className="dl-row"
+              title={`${d.label}: ${d.count.toLocaleString()} (${d.pct.toFixed(1)}%)`}
+              style={{ cursor: 'help' }}
+            >
               <span className="legend-dot" style={{ background: d.color }} />
               <span className="dl-label">{d.label}</span>
               <span className="dl-val">
-                {distKpi.loading ? '…' : distKpi.error ? 'err' : `${d.pct.toFixed(0)}%`}
+                {distKpi.loading ? '…' : distKpi.error ? 'err' : `${formatCompact(d.count)} (${d.pct.toFixed(0)}%)`}
               </span>
             </div>
           ))}
@@ -529,32 +540,32 @@ function FileHarvesting({ refreshKey }) {
   const gcsFiles = useKpi('gcs-files', refreshKey)
   const rawRecords = useKpi('raw-records', refreshKey)
   const profiling = useKpi('file-profiling', refreshKey)
-  const pendingPreservation = {
-    value: profiling.value?.['Pending Preservation'] ?? null,
+  const pendingHarvesting = {
+    value: profiling.value?.['Files For Harvesting'] ?? null,
     loading: profiling.loading,
     error: profiling.error,
   }
 
-  const processedVal = 530489
-  const pendingPresVal = pendingPreservation.value ?? 0
-  const ready = !pendingPreservation.loading && !pendingPreservation.error
-  const completePct = pendingPresVal > 0 ? Math.min(100, (processedVal / pendingPresVal) * 100) : 0
-  const processedPct = pendingPresVal > 0 ? Math.min(100, Math.max(0.5, (processedVal / pendingPresVal) * 100)) : 0
+  const processedVal = 5202 + 1302760 + 9500
+  const pendingHarvVal = pendingHarvesting.value ?? 0
+  const ready = !pendingHarvesting.loading && !pendingHarvesting.error
+  const completePct = pendingHarvVal > 0 ? Math.min(100, (processedVal / pendingHarvVal) * 100) : 0
+  const processedPct = pendingHarvVal > 0 ? Math.min(100, Math.max(0.5, (processedVal / pendingHarvVal) * 100)) : 0
   const remainingPct = Math.max(0, 100 - processedPct)
-  const remainingVal = Math.max(0, pendingPresVal - processedVal)
+  const remainingVal = Math.max(0, pendingHarvVal - processedVal)
 
   return (
     <div className="card">
       <div className="card-head">
         <div className="card-title"><Database size={14} /> File Harvesting</div>
-        <span className="badge">{ready ? `${completePct.toFixed(2)}% Complete` : '…'}</span>
+        <span className="badge">TBD</span>
       </div>
       <div className="harv-bar-wrap">
         <div className="harv-bar">
           <div
             className="harv-bar-green"
             style={{ width: `${processedPct}%` }}
-            title={ready ? `Files Processed: ${processedVal.toLocaleString()} (${completePct.toFixed(2)}% of Pending Preservation)` : 'Loading…'}
+            title={ready ? `Files Processed: ${processedVal.toLocaleString()} (${completePct.toFixed(2)}% of Pending for Harvesting)` : 'Loading…'}
           />
           <div
             className="harv-bar-orange"
@@ -564,21 +575,21 @@ function FileHarvesting({ refreshKey }) {
         </div>
         <div className="harv-bar-axis">
           <span>0</span>
-          <span><KpiValue kpi={pendingPreservation} /></span>
+          <span><KpiValue kpi={pendingHarvesting} /></span>
         </div>
       </div>
       <div className="harv-stats">
         <div className="harv-stat">
-          <div className="harv-num green"><CountUp value={530489} /></div>
+          <div className="harv-num green"><CountUp value={processedVal} /></div>
           <div className="muted-small">Files Processed</div>
         </div>
         <div className="harv-stat" style={{ textAlign: 'right' }}>
-          <div className="harv-num orange"><KpiValue kpi={pendingPreservation} /></div>
-          <div className="muted-small">Pending Preservation</div>
+          <div className="harv-num orange">{ready ? <CountUp value={remainingVal} /> : '…'}</div>
+          <div className="muted-small">Pending for Harvesting</div>
         </div>
       </div>
       <div className="harv-total">
-        <div className="harv-num xl"><CountUp value={24657166} /></div>
+        <div className="harv-num xl"><CountUp value={50010000} /></div>
         <div className="muted-small">Raw Records</div>
       </div>
     </div>
@@ -660,10 +671,18 @@ function DataComplexion() {
   )
 }
 
+const STEP_CUSTOMER_OVERRIDES = {
+  'Step 1': ['Nvidia AI'],
+}
+
 function CustomerTriageProcess({ triage }) {
-  const steps = triage.data?.steps ?? []
-  const step1 = steps[0]?.customers ?? []
-  const total = step1.length
+  const rawSteps = triage.data?.steps ?? []
+  const steps = rawSteps.map(s => {
+    const extras = (STEP_CUSTOMER_OVERRIDES[s.name] ?? []).filter(c => !s.customers.includes(c))
+    return extras.length ? { ...s, customers: [...s.customers, ...extras] } : s
+  })
+  const step1 = steps.find(s => s.name === 'Step 1')?.customers ?? []
+  const total = new Set(step1.map(c => c.trim().split(/\s+/)[0].toLowerCase())).size
   const outreachStatuses = triage.data?.outreach?.statuses ?? []
   const outreachByCustomer = {}
   for (const st of outreachStatuses) {
@@ -684,29 +703,34 @@ function CustomerTriageProcess({ triage }) {
         </div>
       </div>
       <div className="step-grid">
-        {steps.map(s => (
-          <div className="step-col" key={s.name}>
-            <div className="step-pill">
+        {steps.map(s => {
+          const uniqueCount = new Set(
+            s.customers.map(c => c.trim().split(/\s+/)[0].toLowerCase())
+          ).size
+          return (
+            <div className="step-pill" key={s.name + '-pill'}>
               <div className="step-num">{s.name}</div>
               <div className="step-title">{s.title}</div>
               <div className="step-desc">{s.description}</div>
               <div className="step-customers-head">
                 <span>Customers</span>
-                <span className="step-count">{s.customers.length}</span>
+                <span className="step-count">{uniqueCount}</span>
               </div>
             </div>
-            <div className="step-customer-list">
-              {s.customers.map((c, j) => {
-                const status = s.name === 'Step 5' ? outreachByCustomer[c] : null
-                const style = status
-                  ? { background: status.color, color: '#0b0d12', borderColor: status.color }
-                  : undefined
-                const tip = status ? `${c} — ${status.label}` : c
-                return (
-                  <div className="step-customer" key={j} title={tip} style={style}>{c}</div>
-                )
-              })}
-            </div>
+          )
+        })}
+        {steps.map(s => (
+          <div className="step-customer-list" key={s.name + '-list'}>
+            {s.customers.map((c, j) => {
+              const status = s.name === 'Step 5' ? outreachByCustomer[c] : null
+              const style = status
+                ? { background: status.color, color: '#0b0d12', borderColor: status.color }
+                : undefined
+              const tip = status ? `${c} — ${status.label}` : c
+              return (
+                <div className="step-customer" key={j} title={tip} style={style}>{c}</div>
+              )
+            })}
           </div>
         ))}
       </div>
@@ -723,34 +747,42 @@ const OUTREACH_FALLBACK = [
   { name: 'M3',    label: 'Meeting 3',         count: 0, color: '#dc2626' },
 ]
 
+const SENTIMENT_FALLBACK = [
+  { name: 'Green',  label: 'On Track',  count: 0, color: '#22c55e', customers: [] },
+  { name: 'Yellow', label: 'Attention', count: 0, color: '#eab308', customers: [] },
+  { name: 'Red',    label: 'At Risk',   count: 0, color: '#ef4444', customers: [] },
+]
+
 function CustomerSentiment({ triage }) {
-  const statuses = triage.data?.outreach?.statuses?.length
-    ? triage.data.outreach.statuses
-    : OUTREACH_FALLBACK
-  const get = (n) => statuses.find(d => d.name === n)?.count ?? 0
-  const unknown = get('M0') + get('Hold')
-  const ideal = get('M1') + get('Recur')
-  const escalated = get('M2') + get('M3')
+  const categories = triage.data?.sentiment?.categories?.length
+    ? triage.data.sentiment.categories
+    : SENTIMENT_FALLBACK
+  const get = (n) => categories.find(d => d.name === n) ?? { count: 0, label: n }
+  const green = get('Green')
+  const yellow = get('Yellow')
+  const red = get('Red')
+  const total = triage.data?.sentiment?.total ?? categories.reduce((s, d) => s + (d.count ?? 0), 0)
   return (
     <div className="card">
       <div className="card-head">
         <div>
           <div className="card-title"><Users size={14} /> Customer Sentiment</div>
-          <div className="muted-small">Aggregated meeting outcomes</div>
+          <div className="muted-small">Latest sentiment from the Priority Customer Tracker</div>
         </div>
+        <span className="badge">{total}</span>
       </div>
       <div className="sentiment-grid" style={{ flex: 1 }}>
-        <div className="sentiment-tile sentiment-unknown">
-          <div className="sentiment-num">{unknown}</div>
-          <div className="sentiment-label">Unknown</div>
+        <div className="sentiment-tile sentiment-green" title={(green.customers ?? []).join(', ')}>
+          <div className="sentiment-num">{green.count}</div>
+          <div className="sentiment-label">{green.label}</div>
         </div>
-        <div className="sentiment-tile sentiment-ideal">
-          <div className="sentiment-num">{ideal}</div>
-          <div className="sentiment-label">Ideal</div>
+        <div className="sentiment-tile sentiment-yellow" title={(yellow.customers ?? []).join(', ')}>
+          <div className="sentiment-num">{yellow.count}</div>
+          <div className="sentiment-label">{yellow.label}</div>
         </div>
-        <div className="sentiment-tile sentiment-escalated">
-          <div className="sentiment-num">{escalated}</div>
-          <div className="sentiment-label">Escalated</div>
+        <div className="sentiment-tile sentiment-red" title={(red.customers ?? []).join(', ')}>
+          <div className="sentiment-num">{red.count}</div>
+          <div className="sentiment-label">{red.label}</div>
         </div>
       </div>
     </div>

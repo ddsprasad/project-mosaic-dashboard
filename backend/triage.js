@@ -9,6 +9,7 @@ const TRACKER_PATH = process.env.TRACKER_XLSX || DEFAULT_XLSX
 const TRACKER_TAB = process.env.TRACKER_TAB || 'Priority Customer Tracker'
 
 const STEP_META = [
+  { name: 'Step 0', title: 'Analytics on Hold',    description: 'Customers on hold for analytics — not escalated' },
   { name: 'Step 1', title: 'SIFT Search',          description: 'Search for priority client names to identify target files' },
   { name: 'Step 2', title: 'File Retrieval',       description: 'Retrieval of target files from source systems' },
   { name: 'Step 3', title: 'In-scope customers',   description: 'Customer files confirmed in-scope after relevancy review' },
@@ -25,6 +26,12 @@ const OUTREACH_BUCKETS = [
   { name: 'Recur', label: 'Recurring Meeting', match: /recurring/i,                color: '#3b82f6' },
   { name: 'M2',    label: 'Meeting 2',         match: /^meeting\s*2$/i,           color: '#fb7185' },
   { name: 'M3',    label: 'Meeting 3',         match: /^meeting\s*3$/i,           color: '#dc2626' },
+]
+
+const SENTIMENT_BUCKETS = [
+  { name: 'Green',  label: 'On Track',  match: /^green$/i,  color: '#22c55e' },
+  { name: 'Yellow', label: 'Attention', match: /^yellow$/i, color: '#eab308' },
+  { name: 'Red',    label: 'At Risk',   match: /^red$/i,    color: '#ef4444' },
 ]
 
 function loadSheetRows() {
@@ -55,7 +62,7 @@ function locateColumns(headers) {
   const customerIdx = headers.findIndex(h => /^customer$/i.test(h))
   const stepCols = {}
   headers.forEach((h, i) => {
-    const m = h.match(/step\s*([1-5])\s*in\s*dashboard/i)
+    const m = h.match(/step\s*([0-5])\s*in\s*dashboard/i)
     if (m) stepCols[parseInt(m[1], 10)] = i
   })
   // Step 5's column is labelled "Comms Outreach Status Step 5 in Dashboard",
@@ -64,7 +71,8 @@ function locateColumns(headers) {
     const idx = headers.findIndex(h => /comms\s*outreach\s*status/i.test(h))
     if (idx !== -1) stepCols[5] = idx
   }
-  return { customerIdx, stepCols }
+  const sentimentIdx = headers.findIndex(h => /^customer sentiment$/i.test(h))
+  return { customerIdx, stepCols, sentimentIdx }
 }
 
 function hasValue(cell) {
@@ -79,12 +87,19 @@ function bucketForOutreach(raw) {
   return OUTREACH_BUCKETS.find(b => b.match.test(s)) ?? null
 }
 
+function bucketForSentiment(raw) {
+  const s = normalize(raw)
+  if (!s) return null
+  return SENTIMENT_BUCKETS.find(b => b.match.test(s)) ?? null
+}
+
 export async function getTriageBuckets() {
   const rows = loadSheetRows()
   if (rows.length === 0) {
     return {
       steps: STEP_META.map(m => ({ ...m, customers: [] })),
       outreach: { statuses: OUTREACH_BUCKETS.map(b => ({ ...b, count: 0, customers: [] })), total: 0 },
+      sentiment: { categories: SENTIMENT_BUCKETS.map(b => ({ name: b.name, label: b.label, color: b.color, count: 0, customers: [] })), total: 0 },
       totals: { rows: 0 },
       source: TRACKER_PATH,
     }
@@ -95,16 +110,18 @@ export async function getTriageBuckets() {
     throw new Error('Could not locate header row (no "Step 1 in Dashboard" cell found).')
   }
   const headers = (rows[headerRowIdx] || []).map(normalize)
-  const { customerIdx, stepCols } = locateColumns(headers)
+  const { customerIdx, stepCols, sentimentIdx } = locateColumns(headers)
   if (customerIdx === -1) {
     throw new Error(`Could not find "Customer" column. Headers: ${headers.join(' || ')}`)
   }
 
   const dataStart = headerRowIdx + 1
-  const buckets = { 1: [], 2: [], 3: [], 4: [], 5: [] }
-  const seen = { 1: new Set(), 2: new Set(), 3: new Set(), 4: new Set(), 5: new Set() }
+  const buckets = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [] }
+  const seen = { 0: new Set(), 1: new Set(), 2: new Set(), 3: new Set(), 4: new Set(), 5: new Set() }
   const outreachByBucket = Object.fromEntries(OUTREACH_BUCKETS.map(b => [b.name, []]))
   let outreachTotal = 0
+  const sentimentByBucket = Object.fromEntries(SENTIMENT_BUCKETS.map(b => [b.name, []]))
+  let sentimentTotal = 0
 
   for (let r = dataStart; r < rows.length; r++) {
     const row = rows[r]
@@ -112,10 +129,14 @@ export async function getTriageBuckets() {
     const customer = normalize(row[customerIdx])
     if (!customer) continue
 
-    for (let s = 1; s <= 5; s++) {
+    for (let s = 0; s <= 5; s++) {
       const idx = stepCols[s]
       if (idx == null) continue
-      if (hasValue(row[idx]) && !seen[s].has(customer)) {
+      const cell = row[idx]
+      const include = s === 0
+        ? /analytics\s*on\s*hold/i.test(normalize(cell))
+        : hasValue(cell)
+      if (include && !seen[s].has(customer)) {
         seen[s].add(customer)
         buckets[s].push(customer)
       }
@@ -128,11 +149,19 @@ export async function getTriageBuckets() {
         outreachTotal += 1
       }
     }
+
+    if (sentimentIdx != null && sentimentIdx !== -1) {
+      const sBucket = bucketForSentiment(row[sentimentIdx])
+      if (sBucket) {
+        sentimentByBucket[sBucket.name].push(customer)
+        sentimentTotal += 1
+      }
+    }
   }
 
   const steps = STEP_META.map((m, i) => ({
     ...m,
-    customers: buckets[i + 1],
+    customers: buckets[i],
   }))
   const outreach = {
     statuses: OUTREACH_BUCKETS.map(b => ({
@@ -144,9 +173,20 @@ export async function getTriageBuckets() {
     })),
     total: outreachTotal,
   }
+  const sentiment = {
+    categories: SENTIMENT_BUCKETS.map(b => ({
+      name: b.name,
+      label: b.label,
+      color: b.color,
+      count: sentimentByBucket[b.name].length,
+      customers: sentimentByBucket[b.name],
+    })),
+    total: sentimentTotal,
+  }
   return {
     steps,
     outreach,
+    sentiment,
     totals: { rows: rows.length - dataStart },
     source: path.basename(TRACKER_PATH),
   }
