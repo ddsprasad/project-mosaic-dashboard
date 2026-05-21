@@ -39,7 +39,9 @@ function loadWorkbook() {
   if (!fs.existsSync(TRACKER_PATH)) {
     throw new Error(`Tracker workbook not found at ${TRACKER_PATH}`)
   }
-  return xlsx.readFile(TRACKER_PATH)
+  // cellDates: true returns true Date objects for date-typed cells, so the
+  // Meeting 0 scan can tell real dates apart from text like "N/A".
+  return xlsx.readFile(TRACKER_PATH, { cellDates: true })
 }
 
 function loadSheetRows(wb) {
@@ -48,6 +50,41 @@ function loadSheetRows(wb) {
     throw new Error(`Tab "${TRACKER_TAB}" not found. Tabs: ${wb.SheetNames.join(', ')}`)
   }
   return xlsx.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
+}
+
+// Scan every sheet for a "Date of Meeting 0" column and return the set of
+// distinct customers whose row has a real date value in that column. Data
+// can live in either the Priority Customer Tracker or the DNU Customer
+// Outreach Tracker, so we union both.
+function collectMeeting0Customers(wb) {
+  const customers = new Set()
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName]
+    if (!ws) continue
+    const rows = xlsx.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
+    if (!rows.length) continue
+    let headerRow = -1
+    let dateCol = -1
+    for (let i = 0; i < Math.min(rows.length, 15); i++) {
+      const r = rows[i] || []
+      for (let c = 0; c < r.length; c++) {
+        const v = String(r[c] ?? '').replace(/\s+/g, ' ').trim()
+        if (/^date\s*of\s*meeting\s*0$/i.test(v)) { headerRow = i; dateCol = c; break }
+      }
+      if (headerRow !== -1) break
+    }
+    if (headerRow === -1) continue
+    const hdr = (rows[headerRow] || []).map(c => String(c ?? '').replace(/\s+/g, ' ').trim())
+    const custCol = hdr.findIndex(h => /^customer$/i.test(h))
+    for (let r = headerRow + 1; r < rows.length; r++) {
+      const v = rows[r]?.[dateCol]
+      if (!isDateValue(v)) continue
+      const cust = custCol !== -1 ? String(rows[r]?.[custCol] ?? '').replace(/\s+/g, ' ').trim() : ''
+      if (cust) customers.add(cust)
+      else customers.add(`${sheetName}#${r}`)
+    }
+  }
+  return customers
 }
 
 // Step 1 (SIFT Search) comes from the Internal Ops Team Tracker sheet:
@@ -121,10 +158,30 @@ function locateColumns(headers) {
   const requestDateIdx = headers.findIndex(h => /initial\s*customer\s*request\s*date/i.test(h))
   const daysActiveIdx = headers.findIndex(h => /^days\s*active$/i.test(h))
   const crmIdx = headers.findIndex(h => /^crm\s*liaison$/i.test(h))
+  const meeting0DateIdx = headers.findIndex(h => /^date\s*of\s*meeting\s*0$/i.test(h))
   return {
     customerIdx, stepCols, sentimentIdx, reattributedIdx, attributedIdx,
     uniqueCustomerIdx, priorityIdx, requestDateIdx, daysActiveIdx, crmIdx,
+    meeting0DateIdx,
   }
+}
+
+// True iff the cell holds a real date value (Date, Excel serial number, or a
+// string that parses to a valid date). Rejects empty, "—", "TBD", etc.
+function isDateValue(cell) {
+  if (cell == null) return false
+  if (cell instanceof Date) return !Number.isNaN(cell.getTime())
+  if (typeof cell === 'number') {
+    // Excel date serials are positive numbers; 1 == 1900-01-01.
+    return Number.isFinite(cell) && cell > 0 && cell < 100000
+  }
+  if (typeof cell === 'string') {
+    const s = cell.trim()
+    if (!s) return false
+    const d = new Date(s)
+    return !Number.isNaN(d.getTime())
+  }
+  return false
 }
 
 // Excel serial date → ISO yyyy-mm-dd (Excel's epoch is 1899-12-30; 1 == 1900-01-01)
@@ -176,6 +233,7 @@ export async function getTriageBuckets() {
   const {
     customerIdx, stepCols, sentimentIdx, reattributedIdx, attributedIdx,
     uniqueCustomerIdx, priorityIdx, requestDateIdx, daysActiveIdx, crmIdx,
+    meeting0DateIdx,
   } = locateColumns(headers)
   if (customerIdx === -1) {
     throw new Error(`Could not find "Customer" column. Headers: ${headers.join(' || ')}`)
@@ -194,6 +252,16 @@ export async function getTriageBuckets() {
   let attributedFiles = 0
   let reattributedFiles = 0
   const details = []
+  // Distinct customers that have a real Date of Meeting 0 cell anywhere in
+  // the workbook (Priority Customer Tracker OR DNU Customer Outreach Tracker).
+  // Used for the "# of Meeting 0's" stat on the Detailed Customer View.
+  const meeting0Customers = collectMeeting0Customers(wb)
+  // Customer → uniqueName, so we can recompute uniqueGroups after the
+  // furthest-step dedup pass below.
+  const custToUnique = new Map()
+  // Customer → sentiment bucket name ('Red' | 'Yellow' | 'Green' | ''), used to
+  // sort step buckets so risk reads top-down: Red, Yellow, Green, unknown.
+  const custToSentiment = new Map()
 
   for (let r = dataStart; r < rows.length; r++) {
     const row = rows[r]
@@ -203,6 +271,7 @@ export async function getTriageBuckets() {
     const uniqueName = uniqueCustomerIdx !== -1 ? normalize(row[uniqueCustomerIdx]) : ''
     if (uniqueName) allCustomers.add(uniqueName)
     else allCustomers.add(customer)
+    if (!custToUnique.has(customer)) custToUnique.set(customer, uniqueName || customer)
 
     for (let s = 0; s <= 5; s++) {
       const idx = stepCols[s]
@@ -233,8 +302,10 @@ export async function getTriageBuckets() {
       if (sBucket) {
         sentimentByBucket[sBucket.name].push(customer)
         sentimentTotal += 1
+        if (!custToSentiment.has(customer)) custToSentiment.set(customer, sBucket.name)
       }
     }
+
 
     const attrVal = attributedIdx !== -1 ? Number(row[attributedIdx]) : 0
     const reattrVal = reattributedIdx !== -1 ? Number(row[reattributedIdx]) : 0
@@ -267,6 +338,7 @@ export async function getTriageBuckets() {
     // SIFT files column lost its "Step 1 in Dashboard" tag; fall back to a name match.
     const siftFilesCol = stepCols[1] ?? headers.findIndex(h => /initial\s*sift\s*files/i.test(h))
     const copiedFilesCol = stepCols[2]
+    const extractedFilesCol = stepCols[4]
     const num = (v) => {
       const n = Number(v)
       return Number.isFinite(n) ? n : null
@@ -286,6 +358,7 @@ export async function getTriageBuckets() {
       siftFiles: siftFilesCol != null ? num(row[siftFilesCol]) : null,
       copiedFiles: copiedFilesCol != null ? num(row[copiedFilesCol]) : null,
       reattributedFiles: reattributedIdx !== -1 ? num(row[reattributedIdx]) : null,
+      extractedFiles: extractedFilesCol != null ? num(row[extractedFilesCol]) : null,
       outreachStatus: stepCols[5] != null ? normalize(row[stepCols[5]]) : '',
       crmLiaison: crmIdx !== -1 ? normalize(row[crmIdx]) : '',
     })
@@ -297,10 +370,37 @@ export async function getTriageBuckets() {
     // Synthesize a unique-count-sized Set so we can report it consistently.
     for (let i = 0; i < step1Override.uniqueCount; i++) uniqueGroups[1].add('__u' + i)
   }
+
+  // Furthest-step dedup: within steps 0-4, a customer only appears in the
+  // highest step they reached. e.g. if Amex shows in both Step 0 and Step 1,
+  // keep only Step 1. Step 5 (Customer Interaction / outreach) is independent.
+  {
+    const claimed = new Set()
+    for (let s = 4; s >= 0; s--) {
+      const kept = buckets[s].filter(c => {
+        if (claimed.has(c)) return false
+        claimed.add(c)
+        return true
+      })
+      if (kept.length !== buckets[s].length) {
+        buckets[s] = kept
+        uniqueGroups[s] = new Set(kept.map(c => custToUnique.get(c) || c))
+      }
+    }
+  }
+
   const alpha = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })
+  // Risk-first sort for the triage step buckets: Red → Yellow → Green → unknown,
+  // alphabetical within each tier.
+  const SENT_RANK = { Red: 0, Yellow: 1, Green: 2 }
+  const sentRank = (c) => SENT_RANK[custToSentiment.get(c)] ?? 3
+  const bySentiment = (a, b) => {
+    const r = sentRank(a) - sentRank(b)
+    return r !== 0 ? r : alpha(a, b)
+  }
   const steps = STEP_META.map((m, i) => ({
     ...m,
-    customers: [...buckets[i]].sort(alpha),
+    customers: [...buckets[i]].sort(bySentiment),
     uniqueCount: uniqueGroups[i].size,
   }))
   const outreach = {
@@ -336,7 +436,11 @@ export async function getTriageBuckets() {
     sentiment,
     attribution,
     details: [...details].sort((a, b) => alpha(a.customer, b.customer)),
-    totals: { rows: rows.length - dataStart, uniqueCustomers: allCustomers.size },
+    totals: {
+      rows: rows.length - dataStart,
+      uniqueCustomers: allCustomers.size,
+      meeting0Count: meeting0Customers.size,
+    },
     source: path.basename(TRACKER_PATH),
   }
 }

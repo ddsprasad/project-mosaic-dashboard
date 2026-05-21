@@ -234,6 +234,26 @@
   white-space: nowrap;
   font-weight: 500;
 }
+.tile-download-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.07);
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+.tile-download-btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.14);
+  color: #e5e7eb;
+}
+.tile-download-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .muted-small { color: #6b7280; font-size: 11px; }
 .delta-up { color: #22c55e; font-size: 10px; font-weight: 500; margin-left: 4px; }
 
@@ -387,6 +407,55 @@
   gap: 10px;
   align-items: stretch;
 }
+/* Dotted dividers in the Customer Triage Process grid. The grid has 6 pills
+   (children 1-6) followed by 6 customer lists (children 7-12).
+   - Pill row: only divide Step 4 / Step 5 (child 6).
+   - Customer-list row: divide every column (children 8-12). */
+.step-grid > :nth-child(6),
+.step-grid > :nth-child(8),
+.step-grid > :nth-child(9),
+.step-grid > :nth-child(10),
+.step-grid > :nth-child(11),
+.step-grid > :nth-child(12) {
+  position: relative;
+}
+.step-grid > :nth-child(6)::before,
+.step-grid > :nth-child(8)::before,
+.step-grid > :nth-child(9)::before,
+.step-grid > :nth-child(10)::before,
+.step-grid > :nth-child(11)::before,
+.step-grid > :nth-child(12)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 0;
+  border-left: 4px dotted rgba(255, 255, 255, 0.30);
+  pointer-events: none;
+}
+/* The Step 4 / Step 5 boundary divider is brighter and bridges the gap
+   between the pill row and the customer list row, so it reads as one
+   continuous separator. */
+.step-grid > :nth-child(6)::before {
+  border-left-color: rgba(255, 255, 255, 0.55);
+}
+.step-grid > :nth-child(12)::before {
+  top: -10px;
+  border-left-color: rgba(255, 255, 255, 0.55);
+}
+.app.light .step-grid > :nth-child(6)::before,
+.app.light .step-grid > :nth-child(8)::before,
+.app.light .step-grid > :nth-child(9)::before,
+.app.light .step-grid > :nth-child(10)::before,
+.app.light .step-grid > :nth-child(11)::before,
+.app.light .step-grid > :nth-child(12)::before {
+  border-left-color: rgba(15, 23, 42, 0.22);
+}
+.app.light .step-grid > :nth-child(6)::before,
+.app.light .step-grid > :nth-child(12)::before {
+  border-left-color: rgba(15, 23, 42, 0.45);
+}
 .step-col {
   display: flex;
   flex-direction: column;
@@ -403,6 +472,24 @@
   flex-direction: column;
   gap: 4px;
   min-height: 136px;
+}
+/* Step 5 (Customer Interaction / outreach) gets a lighter purple so it
+   reads as a separate stage from the analytics progression (Steps 0-4). */
+.step-grid > .step-pill:nth-child(6) {
+  background: linear-gradient(135deg, #c4b5fd, #a78bfa);
+  border-color: rgba(196, 181, 253, 0.45);
+  color: #1e1b4b;
+}
+.step-grid > .step-pill:nth-child(6) .step-desc {
+  color: rgba(30, 27, 75, 0.75);
+}
+.step-grid > .step-pill:nth-child(6) .step-customers-head {
+  background: rgba(255, 255, 255, 0.35);
+  color: #1e1b4b;
+}
+.step-grid > .step-pill:nth-child(6) .step-count {
+  background: rgba(30, 27, 75, 0.16);
+  color: #1e1b4b;
 }
 .step-num {
   font-size: 10px;
@@ -702,6 +789,33 @@
   display: inline-flex;
   align-items: center;
 }
+/* Clickable column header sort control on the "Customer" column */
+.dcv-sort-head {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 160ms ease;
+}
+.dcv-sort-head:hover { color: #e5e7eb; }
+.dcv-sort-head.is-active { color: #c4b5fd; }
+.dcv-sort-arrows {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 0.7;
+  font-size: 8px;
+  color: #475569;
+}
+.dcv-arrow { transition: color 160ms ease, transform 160ms ease; }
+.dcv-arrow.on { color: #c4b5fd; transform: scale(1.15); }
 .dcv-search-icon {
   position: absolute;
   left: 11px;

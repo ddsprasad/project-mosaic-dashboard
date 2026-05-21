@@ -405,13 +405,14 @@ const STEP_SHORT = {
   4: 'Extraction',
   5: 'Interaction',
 }
+// Distinct hue per step so the Analytics Current step pill reads at a glance.
 const STEP_COLORS = {
-  0: '#6b7280',
-  1: '#a78bfa',
-  2: '#3b82f6',
-  3: '#14b8a6',
-  4: '#22c55e',
-  5: '#f59e0b',
+  0: '#94a3b8',  // slate — on hold
+  1: '#a855f7',  // violet — SIFT
+  2: '#06b6d4',  // cyan — retrieval
+  3: '#ec4899',  // pink — in-scope
+  4: '#f59e0b',  // amber — extraction
+  5: '#10b981',  // emerald — interaction
 }
 const SENTIMENT_DISPLAY = {
   Green:  { label: 'Positive', dot: '#22c55e' },
@@ -439,15 +440,22 @@ function formatRequestDate(s) {
 }
 function daysActiveColor(n) {
   if (n == null) return '#9ca3af'
-  if (n <= 14) return '#22c55e'
-  if (n <= 35) return '#eab308'
-  return '#ef4444'
+  if (n < 14) return '#22c55e'   // under 2 weeks — on track
+  if (n <= 30) return '#eab308'  // 2 weeks to a month — watch
+  return '#ef4444'               // over a month — at risk
+}
+
+// Filename-safe local timestamp: YYYY-MM-DD_HHMMSS. Uses local time so the
+// stamp matches the clock the user is looking at, not UTC.
+function fileStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
 
 function downloadCustomersPdf(rows) {
   const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: 'a4' })
   const pageW = pdf.internal.pageSize.getWidth()
-  const stamp = new Date().toISOString().slice(0, 10)
+  const stamp = fileStamp()
 
   // Title block
   pdf.setFillColor(15, 17, 21)
@@ -462,7 +470,7 @@ function downloadCustomersPdf(rows) {
   pdf.text(`${rows.length} customers · Generated ${new Date().toLocaleString()}`, 28, 46)
 
   const body = rows.map(r => [
-    `${r.customer}\ncust-${String(r.priorityOrder ?? '?').padStart(2, '0')}`,
+    `${r.customer}\nPriority - ${r.priorityOrder ?? '?'}`,
     formatRequestDate(r.requestDate),
     r.daysActive != null ? `${r.daysActive} days` : '—',
     SENTIMENT_DISPLAY[r.sentiment]?.label ?? '—',
@@ -471,6 +479,7 @@ function downloadCustomersPdf(rows) {
       r.siftFiles != null ? `${r.siftFiles.toLocaleString()} sift` : '— sift',
       r.copiedFiles != null ? `${r.copiedFiles.toLocaleString()} copied` : '— copied',
       r.reattributedFiles != null ? `${r.reattributedFiles.toLocaleString()} reattr` : '— reattr',
+      r.extractedFiles != null ? `${r.extractedFiles.toLocaleString()} extracted` : '— extracted',
     ].join('\n'),
     outreachChip(r.outreachStatus)?.label ?? '—',
     r.crmLiaison || '—',
@@ -523,15 +532,14 @@ function downloadCustomersPdf(rows) {
       }
       // Days active tint
       if (data.column.index === 2 && r.daysActive != null) {
-        if (r.daysActive <= 14) data.cell.styles.textColor = [22, 163, 74]
-        else if (r.daysActive <= 35) data.cell.styles.textColor = [161, 98, 7]
+        if (r.daysActive < 14) data.cell.styles.textColor = [22, 163, 74]
+        else if (r.daysActive <= 30) data.cell.styles.textColor = [161, 98, 7]
         else data.cell.styles.textColor = [185, 28, 28]
         data.cell.styles.fontStyle = 'bold'
       }
-      // Step tint
+      // Step tint — distinct color per step number from STEP_COLORS.
       if (data.column.index === 4 && r.currentStep != null) {
-        const c = STEP_COLORS[r.currentStep]
-        const rgb = hexToRgb(c)
+        const rgb = hexToRgb(STEP_COLORS[r.currentStep])
         if (rgb) data.cell.styles.textColor = rgb
         data.cell.styles.fontStyle = 'bold'
       }
@@ -560,18 +568,222 @@ function hexToRgb(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
 }
 
+// Capture a DOM element as a PNG via html2canvas and drop it into a PDF with
+// a title banner. Used by the Customer Sentiment and Customer Outreach tiles.
+async function downloadElementAsPdf(el, title, subtitle, filenameBase) {
+  if (!el) return
+  const canvas = await html2canvas(el, {
+    backgroundColor: '#07080c',
+    scale: 2,
+    useCORS: true,
+    logging: false,
+  })
+  const imgData = canvas.toDataURL('image/png')
+  // Letter-landscape so a single tile fills the page nicely.
+  const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: 'a4' })
+  const pageW = pdf.internal.pageSize.getWidth()
+  const pageH = pdf.internal.pageSize.getHeight()
+  const stamp = fileStamp()
+
+  // Title band
+  pdf.setFillColor(15, 17, 21)
+  pdf.rect(0, 0, pageW, 60, 'F')
+  pdf.setTextColor(248, 250, 252)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(16)
+  pdf.text(title, 28, 28)
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(9)
+  pdf.setTextColor(148, 163, 184)
+  pdf.text(`${subtitle} · Generated ${new Date().toLocaleString()}`, 28, 46)
+
+  // Image area
+  const marginX = 28
+  const marginTop = 78
+  const marginBottom = 32
+  const maxW = pageW - marginX * 2
+  const maxH = pageH - marginTop - marginBottom
+  const ratio = canvas.width / canvas.height
+  let drawW = maxW
+  let drawH = drawW / ratio
+  if (drawH > maxH) {
+    drawH = maxH
+    drawW = drawH * ratio
+  }
+  const drawX = (pageW - drawW) / 2
+  pdf.addImage(imgData, 'PNG', drawX, marginTop, drawW, drawH, undefined, 'FAST')
+
+  // Footer
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(8)
+  pdf.setTextColor(148, 163, 184)
+  pdf.text(`Project Mosaic — ${title}`, marginX, pageH - 12)
+  pdf.text(`Page 1 of 1`, pageW - marginX, pageH - 12, { align: 'right' })
+
+  pdf.save(`${filenameBase}-${stamp}.pdf`)
+}
+
+// Full triage report PDF: one section per step (0-5) listing every customer
+// in that step, tinted by sentiment to match the dashboard tile.
+function downloadTriagePdf(triageData) {
+  const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' })
+  const pageW = pdf.internal.pageSize.getWidth()
+  const pageH = pdf.internal.pageSize.getHeight()
+  const stamp = fileStamp()
+  const steps = triageData?.steps ?? []
+  const sentimentByCustomer = {}
+  for (const st of (triageData?.sentiment?.categories ?? [])) {
+    for (const c of (st.customers ?? [])) sentimentByCustomer[c] = st
+  }
+  const total = triageData?.totals?.uniqueCustomers ?? 0
+
+  // Cover header
+  pdf.setFillColor(15, 17, 21)
+  pdf.rect(0, 0, pageW, 70, 'F')
+  pdf.setTextColor(248, 250, 252)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(18)
+  pdf.text('Customer Triage Process', 28, 32)
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(10)
+  pdf.setTextColor(148, 163, 184)
+  pdf.text(`${total} customers in pipeline · Generated ${new Date().toLocaleString()}`, 28, 52)
+
+  let cursorY = 90
+  steps.forEach((s, i) => {
+    const count = s.uniqueCount ?? s.customers.length
+    // Section header band
+    if (cursorY > pageH - 120) { pdf.addPage(); cursorY = 40 }
+    pdf.setFillColor(241, 245, 249)
+    pdf.rect(24, cursorY, pageW - 48, 44, 'F')
+    pdf.setFillColor(15, 23, 42)
+    pdf.rect(24, cursorY, 4, 44, 'F')
+    pdf.setTextColor(15, 23, 42)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(11)
+    pdf.text(`${s.name} — ${s.title}`, 36, cursorY + 18)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(9)
+    pdf.setTextColor(71, 85, 105)
+    pdf.text(s.description || '', 36, cursorY + 33)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(11)
+    pdf.setTextColor(15, 23, 42)
+    pdf.text(`${count}`, pageW - 36, cursorY + 22, { align: 'right' })
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    pdf.setTextColor(100, 116, 139)
+    pdf.text('customers', pageW - 36, cursorY + 35, { align: 'right' })
+    cursorY += 52
+
+    if (!s.customers.length) {
+      pdf.setFont('helvetica', 'italic')
+      pdf.setFontSize(9)
+      pdf.setTextColor(148, 163, 184)
+      pdf.text('No customers in this step.', 36, cursorY + 8)
+      cursorY += 24
+      return
+    }
+
+    const body = s.customers.map(c => {
+      const sent = sentimentByCustomer[c]
+      return [c, sent?.label ?? '—']
+    })
+    autoTable(pdf, {
+      startY: cursorY,
+      head: [['Customer', 'Sentiment']],
+      body,
+      theme: 'grid',
+      margin: { left: 24, right: 24 },
+      styles: {
+        font: 'helvetica',
+        fontSize: 9,
+        cellPadding: 5,
+        textColor: [30, 41, 59],
+        lineColor: [226, 232, 240],
+        lineWidth: 0.4,
+        valign: 'middle',
+      },
+      headStyles: {
+        fillColor: [30, 41, 59],
+        textColor: [241, 245, 249],
+        fontSize: 9,
+        fontStyle: 'bold',
+        halign: 'left',
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 'auto', fontStyle: 'bold' },
+        1: { cellWidth: 110 },
+      },
+      didParseCell: (data) => {
+        if (data.section !== 'body') return
+        const c = s.customers[data.row.index]
+        const sent = sentimentByCustomer[c]
+        if (!sent) return
+        // Tint both cells with the sentiment color.
+        let rgb = null
+        if (sent.color === '#22c55e') rgb = [22, 163, 74]
+        else if (sent.color === '#eab308') rgb = [161, 98, 7]
+        else if (sent.color === '#ef4444') rgb = [185, 28, 28]
+        else rgb = hexToRgb(sent.color)
+        if (rgb && data.column.index === 1) {
+          data.cell.styles.textColor = rgb
+          data.cell.styles.fontStyle = 'bold'
+        }
+        if (rgb && data.column.index === 0) {
+          data.cell.styles.textColor = rgb
+        }
+      },
+    })
+    cursorY = pdf.lastAutoTable.finalY + 18
+  })
+
+  // Footer
+  const totalPages = pdf.getNumberOfPages()
+  for (let i = 1; i <= totalPages; i++) {
+    pdf.setPage(i)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    pdf.setTextColor(148, 163, 184)
+    pdf.text('Project Mosaic — Customer Triage Process', 24, pageH - 12)
+    pdf.text(`Page ${i} of ${totalPages}`, pageW - 24, pageH - 12, { align: 'right' })
+  }
+  pdf.save(`customer-triage-${stamp}.pdf`)
+}
+
 function DetailedCustomerView() {
   const triage = useTriage(0)
   const allRows = triage.data?.details ?? []
   const [downloading, setDownloading] = useState(false)
   const [query, setQuery] = useState('')
+  // Customer-name sort direction: null = default priority sort, 'asc' = A→Z,
+  // 'desc' = Z→A. The Customer column header cycles through these.
+  const [nameSort, setNameSort] = useState(null)
+  const cycleNameSort = () => {
+    setNameSort(d => (d === null ? 'asc' : d === 'asc' ? 'desc' : null))
+  }
   const q = query.trim().toLowerCase()
-  const rows = q
+  const filtered = q
     ? allRows.filter(r =>
         (r.customer || '').toLowerCase().includes(q) ||
         (r.crmLiaison || '').toLowerCase().includes(q)
       )
     : allRows
+  const byName = (a, b) =>
+    (a.customer || '').localeCompare(b.customer || '', undefined, { sensitivity: 'base' })
+  const byPriority = (a, b) => {
+    const pa = a.priorityOrder == null ? Infinity : a.priorityOrder
+    const pb = b.priorityOrder == null ? Infinity : b.priorityOrder
+    if (pa !== pb) return pa - pb
+    return byName(a, b)
+  }
+  const cmp = nameSort === 'asc'
+    ? byName
+    : nameSort === 'desc'
+      ? (a, b) => byName(b, a)
+      : byPriority
+  const rows = [...filtered].sort(cmp)
   if (triage.loading) {
     return <div className="dcv-shell"><div className="dcv-muted" style={{ padding: 24 }}>Loading…</div></div>
   }
@@ -603,6 +815,11 @@ function DetailedCustomerView() {
             <span className="dcv-count">
               {q ? `${rows.length} of ${allRows.length}` : `${rows.length} customers`}
             </span>
+            {triage.data?.totals?.meeting0Count != null && (
+              <span className="dcv-count" title="Customers with a Date of Meeting 0 in the Priority Customer Tracker">
+                # of Meeting 0&apos;s: {triage.data.totals.meeting0Count}
+              </span>
+            )}
           </div>
           <div className="dcv-actions" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <div className="dcv-search-wrap">
@@ -642,7 +859,30 @@ function DetailedCustomerView() {
         <div className="dcv-card">
           <table className="dcv-table">
             <thead>
-              <tr>{headers.map(h => <th key={h}>{h}</th>)}</tr>
+              <tr>{headers.map(h => (
+                h === 'Customer' ? (
+                  <th key={h}>
+                    <button
+                      type="button"
+                      className={`dcv-sort-head ${nameSort ? 'is-active' : ''}`}
+                      onClick={cycleNameSort}
+                      title={
+                        nameSort === 'asc' ? 'Sorted A→Z. Click for Z→A.'
+                        : nameSort === 'desc' ? 'Sorted Z→A. Click to clear (back to Priority).'
+                        : 'Click to sort by Customer A→Z (default is Priority).'
+                      }
+                    >
+                      <span>{h}</span>
+                      <span className="dcv-sort-arrows" aria-hidden="true">
+                        <span className={`dcv-arrow up ${nameSort === 'asc' ? 'on' : ''}`}>▲</span>
+                        <span className={`dcv-arrow down ${nameSort === 'desc' ? 'on' : ''}`}>▼</span>
+                      </span>
+                    </button>
+                  </th>
+                ) : (
+                  <th key={h}>{h}</th>
+                )
+              ))}</tr>
             </thead>
             <tbody>
               {rows.map((r, i) => {
@@ -656,7 +896,7 @@ function DetailedCustomerView() {
                   <tr key={i} className="dcv-row-enter" style={{ animationDelay: `${Math.min(i, 14) * 28}ms` }}>
                     <td>
                       <div className="dcv-cust-name">{r.customer}</div>
-                      <div className="dcv-cust-sub">cust-{String(r.priorityOrder ?? '?').padStart(2, '0')}</div>
+                      <div className="dcv-cust-sub">Priority - {r.priorityOrder ?? '?'}</div>
                     </td>
                     <td className="dcv-muted" style={{ whiteSpace: 'nowrap' }}>
                       {formatRequestDate(r.requestDate)}
@@ -689,6 +929,8 @@ function DetailedCustomerView() {
                         <span className="dcv-files-label">copied</span>
                         <span className="dcv-files-num dim">{r.reattributedFiles != null ? r.reattributedFiles.toLocaleString() : '—'}</span>
                         <span className="dcv-files-label">reattr</span>
+                        <span className="dcv-files-num dim">{r.extractedFiles != null ? r.extractedFiles.toLocaleString() : '—'}</span>
+                        <span className="dcv-files-label">extracted</span>
                       </div>
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
@@ -972,11 +1214,11 @@ function CustomerTriageProcess({ triage }) {
     return extras.length ? { ...s, customers: [...s.customers, ...extras] } : s
   })
   const total = triage.data?.totals?.uniqueCustomers ?? 0
-  const outreachStatuses = triage.data?.outreach?.statuses ?? []
-  const outreachByCustomer = {}
-  for (const st of outreachStatuses) {
+  const sentimentBuckets = triage.data?.sentiment?.categories ?? triage.data?.sentiment?.statuses ?? []
+  const sentimentByCustomer = {}
+  for (const st of sentimentBuckets) {
     for (const c of (st.customers ?? [])) {
-      outreachByCustomer[c] = { color: st.color, label: st.label }
+      sentimentByCustomer[c] = { color: st.color, label: st.label }
     }
   }
   return (
@@ -987,6 +1229,14 @@ function CustomerTriageProcess({ triage }) {
           <div className="muted-small">End-to-end workflow from SIFT Search to Customer Interaction</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            className="dcv-download dcv-download-pdf"
+            onClick={() => downloadTriagePdf(triage.data)}
+            disabled={!triage.data || triage.loading}
+            title="Download the full Customer Triage Process as a PDF"
+          >
+            <Download size={13} /> Download PDF
+          </button>
           <button
             className="glass-tab"
             onClick={() => window.open('?view=customers', '_blank', 'noopener,noreferrer')}
@@ -1020,11 +1270,11 @@ function CustomerTriageProcess({ triage }) {
         {steps.map(s => (
           <div className="step-customer-list" key={s.name + '-list'}>
             {s.customers.map((c, j) => {
-              const status = s.name === 'Step 5' ? outreachByCustomer[c] : null
-              const style = status
-                ? { background: status.color, color: '#0b0d12', borderColor: status.color }
+              const sent = sentimentByCustomer[c]
+              const style = sent
+                ? { background: sent.color, color: '#0b0d12', borderColor: sent.color }
                 : undefined
-              const tip = status ? `${c} — ${status.label}` : c
+              const tip = sent ? `${c} — ${sent.label}` : c
               return (
                 <div className="step-customer" key={j} title={tip} style={style}>{c}</div>
               )
@@ -1060,14 +1310,43 @@ function CustomerSentiment({ triage }) {
   const yellow = get('Yellow')
   const red = get('Red')
   const total = triage.data?.sentiment?.total ?? categories.reduce((s, d) => s + (d.count ?? 0), 0)
+  const cardRef = useRef(null)
+  const [downloading, setDownloading] = useState(false)
+  const handleDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      await downloadElementAsPdf(
+        cardRef.current,
+        'Customer Sentiment',
+        'Latest sentiment from the Priority Customer Tracker',
+        'customer-sentiment',
+      )
+    } catch (e) {
+      console.error('sentiment download failed', e)
+    } finally {
+      setDownloading(false)
+    }
+  }
   return (
-    <div className="card tile-customers">
+    <div className="card tile-customers" ref={cardRef}>
       <div className="card-head">
         <div>
           <div className="card-title"><Users size={14} /> Customer Sentiment</div>
           <div className="muted-small">Latest sentiment from the Priority Customer Tracker</div>
         </div>
-        <span className="badge">{total}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            className="tile-download-btn"
+            onClick={handleDownload}
+            disabled={downloading}
+            title="Download this tile as a PDF"
+            data-html2canvas-ignore="true"
+          >
+            <Download size={12} />
+          </button>
+          <span className="badge">{total}</span>
+        </div>
       </div>
       <div className="sentiment-grid" style={{ flex: 1 }}>
         <div className="sentiment-tile sentiment-green" title={(green.customers ?? []).join(', ')}>
@@ -1093,14 +1372,43 @@ function CustomerOutreach({ triage }) {
     : OUTREACH_FALLBACK
   const total = triage.data?.outreach?.total ?? statuses.reduce((s, d) => s + (d.count ?? 0), 0)
   const yMax = Math.max(1, ...statuses.map(d => d.count ?? 0))
+  const cardRef = useRef(null)
+  const [downloading, setDownloading] = useState(false)
+  const handleDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      await downloadElementAsPdf(
+        cardRef.current,
+        'Customer Outreach',
+        'Customers by meeting stage',
+        'customer-outreach',
+      )
+    } catch (e) {
+      console.error('outreach download failed', e)
+    } finally {
+      setDownloading(false)
+    }
+  }
   return (
-    <div className="card tile-customers">
+    <div className="card tile-customers" ref={cardRef}>
       <div className="card-head">
         <div>
           <div className="card-title"><Users size={14} /> Customer Outreach</div>
           <div className="muted-small">Customers by meeting stage</div>
         </div>
-        <span className="badge">{total}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            className="tile-download-btn"
+            onClick={handleDownload}
+            disabled={downloading}
+            title="Download this tile as a PDF"
+            data-html2canvas-ignore="true"
+          >
+            <Download size={12} />
+          </button>
+          <span className="badge">{total}</span>
+        </div>
       </div>
       <div style={{ flex: 1, minHeight: 140 }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -1169,7 +1477,7 @@ function MainApp() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `project-mosaic-${new Date().toISOString().slice(0, 10)}.png`
+      a.download = `project-mosaic-${fileStamp()}.png`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
