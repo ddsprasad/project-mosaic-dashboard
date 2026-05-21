@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, createContext, useContext } from 'react'
 import { Sun, Moon, RefreshCw, Download, FileText, Database, Users, GitBranch, X } from 'lucide-react'
 import html2canvas from 'html2canvas'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   BarChart,
   Bar,
@@ -116,11 +118,11 @@ function Header({ onRefresh, refreshing, theme, onToggleTheme, onDownload, downl
 function FilePreservation({ refreshKey }) {
   const profiling = useKpi('file-profiling', refreshKey)
   const totalExfil = {
-    value: profiling.value?.['Total Files'] ?? null,
-    loading: profiling.loading,
-    error: profiling.error,
+    value: 226400000,
+    loading: false,
+    error: null,
   }
-  const preservationFiles = useKpi('preservation-files', refreshKey)
+  const preservationFiles = { value: 209980000, loading: false, error: null }
   const preservationPct = (totalExfil.value && preservationFiles.value != null)
     ? Math.min(100, (preservationFiles.value / totalExfil.value) * 100)
     : null
@@ -130,7 +132,7 @@ function FilePreservation({ refreshKey }) {
       ? 'err'
       : `${preservationPct.toFixed(0)}%`
   return (
-    <div className="card preservation">
+    <div className="card preservation tile-files">
       <div className="preservation-left">
         <div className="card-title"><FileText size={14} /> File Preservation</div>
         <div className="muted-small">Overall preservation status across all data sources</div>
@@ -395,6 +397,322 @@ function BurndownBars({ rows, max }) {
   )
 }
 
+const STEP_SHORT = {
+  0: 'On Hold',
+  1: 'SIFT',
+  2: 'Retrieval',
+  3: 'In-Scope',
+  4: 'Extraction',
+  5: 'Interaction',
+}
+const STEP_COLORS = {
+  0: '#6b7280',
+  1: '#a78bfa',
+  2: '#3b82f6',
+  3: '#14b8a6',
+  4: '#22c55e',
+  5: '#f59e0b',
+}
+const SENTIMENT_DISPLAY = {
+  Green:  { label: 'Positive', dot: '#22c55e' },
+  Yellow: { label: 'Neutral',  dot: '#eab308' },
+  Red:    { label: 'At Risk',  dot: '#ef4444' },
+}
+const OUTREACH_DISPLAY = [
+  { test: /^meeting\s*0$/i, label: 'M0 - Internal', bg: '#374151', fg: '#e5e7eb' },
+  { test: /\bhold\b/i,        label: 'On Hold',      bg: '#4b5563', fg: '#e5e7eb' },
+  { test: /^meeting\s*1$/i, label: 'M1 - Initial', bg: '#8b5cf6', fg: '#fff' },
+  { test: /recurring/i,       label: 'Recurring',    bg: '#3b82f6', fg: '#0b0d12' },
+  { test: /^meeting\s*2$/i, label: 'M2 - Confirm', bg: '#f9a8d4', fg: '#0b0d12' },
+  { test: /^meeting\s*3$/i, label: 'M3 - Extract', bg: '#c026d3', fg: '#fff' },
+]
+function outreachChip(raw) {
+  if (!raw) return null
+  for (const o of OUTREACH_DISPLAY) if (o.test.test(raw)) return o
+  return null
+}
+function formatRequestDate(s) {
+  if (!s) return '—'
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+}
+function daysActiveColor(n) {
+  if (n == null) return '#9ca3af'
+  if (n <= 14) return '#22c55e'
+  if (n <= 35) return '#eab308'
+  return '#ef4444'
+}
+
+function downloadCustomersPdf(rows) {
+  const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: 'a4' })
+  const pageW = pdf.internal.pageSize.getWidth()
+  const stamp = new Date().toISOString().slice(0, 10)
+
+  // Title block
+  pdf.setFillColor(15, 17, 21)
+  pdf.rect(0, 0, pageW, 60, 'F')
+  pdf.setTextColor(248, 250, 252)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(16)
+  pdf.text('Detailed customer view', 28, 28)
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(9)
+  pdf.setTextColor(148, 163, 184)
+  pdf.text(`${rows.length} customers · Generated ${new Date().toLocaleString()}`, 28, 46)
+
+  const body = rows.map(r => [
+    `${r.customer}\ncust-${String(r.priorityOrder ?? '?').padStart(2, '0')}`,
+    formatRequestDate(r.requestDate),
+    r.daysActive != null ? `${r.daysActive} days` : '—',
+    SENTIMENT_DISPLAY[r.sentiment]?.label ?? '—',
+    r.currentStep != null ? `Step ${r.currentStep} · ${STEP_SHORT[r.currentStep] ?? ''}` : '—',
+    [
+      r.siftFiles != null ? `${r.siftFiles.toLocaleString()} sift` : '— sift',
+      r.copiedFiles != null ? `${r.copiedFiles.toLocaleString()} copied` : '— copied',
+      r.reattributedFiles != null ? `${r.reattributedFiles.toLocaleString()} reattr` : '— reattr',
+    ].join('\n'),
+    outreachChip(r.outreachStatus)?.label ?? '—',
+    r.crmLiaison || '—',
+  ])
+
+  autoTable(pdf, {
+    startY: 72,
+    head: [['Customer', 'Request Date', 'Days Active', 'Sentiment', 'Analytics Step', 'Files', 'Meeting', 'CRM Liaison']],
+    body,
+    theme: 'grid',
+    margin: { left: 24, right: 24 },
+    styles: {
+      font: 'helvetica',
+      fontSize: 8.5,
+      cellPadding: 6,
+      textColor: [30, 41, 59],
+      lineColor: [226, 232, 240],
+      lineWidth: 0.4,
+      overflow: 'linebreak',
+      valign: 'middle',
+    },
+    headStyles: {
+      fillColor: [30, 41, 59],
+      textColor: [241, 245, 249],
+      fontSize: 8.5,
+      fontStyle: 'bold',
+      halign: 'left',
+    },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: {
+      0: { cellWidth: 110, fontStyle: 'bold' },
+      1: { cellWidth: 70 },
+      2: { cellWidth: 60 },
+      3: { cellWidth: 60 },
+      4: { cellWidth: 80 },
+      5: { cellWidth: 110 },
+      6: { cellWidth: 70 },
+      7: { cellWidth: 'auto' },
+    },
+    didParseCell: (data) => {
+      if (data.section !== 'body') return
+      const r = rows[data.row.index]
+      if (!r) return
+      // Sentiment tint
+      if (data.column.index === 3) {
+        const s = SENTIMENT_DISPLAY[r.sentiment]
+        if (s?.dot === '#22c55e') data.cell.styles.textColor = [22, 163, 74]
+        else if (s?.dot === '#eab308') data.cell.styles.textColor = [161, 98, 7]
+        else if (s?.dot === '#ef4444') data.cell.styles.textColor = [185, 28, 28]
+      }
+      // Days active tint
+      if (data.column.index === 2 && r.daysActive != null) {
+        if (r.daysActive <= 14) data.cell.styles.textColor = [22, 163, 74]
+        else if (r.daysActive <= 35) data.cell.styles.textColor = [161, 98, 7]
+        else data.cell.styles.textColor = [185, 28, 28]
+        data.cell.styles.fontStyle = 'bold'
+      }
+      // Step tint
+      if (data.column.index === 4 && r.currentStep != null) {
+        const c = STEP_COLORS[r.currentStep]
+        const rgb = hexToRgb(c)
+        if (rgb) data.cell.styles.textColor = rgb
+        data.cell.styles.fontStyle = 'bold'
+      }
+    },
+  })
+
+  // Page footer
+  const total = pdf.getNumberOfPages()
+  for (let i = 1; i <= total; i++) {
+    pdf.setPage(i)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    pdf.setTextColor(148, 163, 184)
+    pdf.text(`Project Mosaic — Detailed customer view`, 24, pdf.internal.pageSize.getHeight() - 12)
+    pdf.text(`Page ${i} of ${total}`, pageW - 24, pdf.internal.pageSize.getHeight() - 12, { align: 'right' })
+  }
+
+  pdf.save(`detailed-customer-view-${stamp}.pdf`)
+}
+
+function hexToRgb(hex) {
+  if (!hex) return null
+  const m = hex.replace('#', '').match(/^([0-9a-f]{6})$/i)
+  if (!m) return null
+  const n = parseInt(m[1], 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
+function DetailedCustomerView() {
+  const triage = useTriage(0)
+  const allRows = triage.data?.details ?? []
+  const [downloading, setDownloading] = useState(false)
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
+  const rows = q
+    ? allRows.filter(r =>
+        (r.customer || '').toLowerCase().includes(q) ||
+        (r.crmLiaison || '').toLowerCase().includes(q)
+      )
+    : allRows
+  if (triage.loading) {
+    return <div className="dcv-shell"><div className="dcv-muted" style={{ padding: 24 }}>Loading…</div></div>
+  }
+  if (triage.error) {
+    return <div className="dcv-shell"><div style={{ padding: 24, color: '#ef4444' }}>Error: {triage.error}</div></div>
+  }
+  const headers = [
+    'Customer', 'Request Date', 'Days Active', 'Sentiment',
+    'Analytics Current step', 'Files', 'Meeting Status', 'CRM Liaison', '',
+  ]
+  const handlePdfDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      downloadCustomersPdf(rows)
+    } catch (e) {
+      console.error('pdf download failed', e)
+    } finally {
+      setDownloading(false)
+    }
+  }
+  return (
+    <div className="dcv-shell">
+      <div className="dcv-enter">
+        <div className="dcv-head">
+          <div className="dcv-title-wrap">
+            <Users size={18} color="#cbd5e1" />
+            <span className="dcv-title">Detailed customer view</span>
+            <span className="dcv-count">
+              {q ? `${rows.length} of ${allRows.length}` : `${rows.length} customers`}
+            </span>
+          </div>
+          <div className="dcv-actions" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <div className="dcv-search-wrap">
+              <svg className="dcv-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="7"/>
+                <path d="m20 20-3.5-3.5"/>
+              </svg>
+              <input
+                className="dcv-search"
+                type="text"
+                placeholder="Search customer or CRM…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                autoFocus
+              />
+              {query && (
+                <button
+                  className="dcv-search-clear"
+                  onClick={() => setQuery('')}
+                  aria-label="Clear search"
+                  title="Clear"
+                >✕</button>
+              )}
+            </div>
+            <button
+              className="dcv-download dcv-download-pdf"
+              onClick={handlePdfDownload}
+              disabled={downloading}
+              title="Download as PDF"
+            >
+              <FileText size={13} className={downloading ? 'spinning' : ''} />
+              <span>{downloading ? 'Capturing…' : 'PDF'}</span>
+            </button>
+            <button className="dcv-close" onClick={() => window.close()}>Close ✕</button>
+          </div>
+        </div>
+        <div className="dcv-card">
+          <table className="dcv-table">
+            <thead>
+              <tr>{headers.map(h => <th key={h}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const sent = SENTIMENT_DISPLAY[r.sentiment] ?? null
+                const step = r.currentStep
+                const stepLabel = step != null ? `Step ${step} · ${STEP_SHORT[step]}` : '—'
+                const stepColor = step != null ? STEP_COLORS[step] : '#475569'
+                const meet = outreachChip(r.outreachStatus)
+                const daysColor = daysActiveColor(r.daysActive)
+                return (
+                  <tr key={i} className="dcv-row-enter" style={{ animationDelay: `${Math.min(i, 14) * 28}ms` }}>
+                    <td>
+                      <div className="dcv-cust-name">{r.customer}</div>
+                      <div className="dcv-cust-sub">cust-{String(r.priorityOrder ?? '?').padStart(2, '0')}</div>
+                    </td>
+                    <td className="dcv-muted" style={{ whiteSpace: 'nowrap' }}>
+                      {formatRequestDate(r.requestDate)}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {r.daysActive != null
+                        ? <span style={{ color: daysColor, fontWeight: 600 }}>{r.daysActive} days</span>
+                        : <span className="dcv-dash">—</span>}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {sent ? (
+                        <span className="dcv-pill" style={{ color: sent.dot, background: sent.dot + '20' }}>
+                          <span className="dcv-pill-dot" />
+                          <span style={{ color: '#e5e7eb' }}>{sent.label}</span>
+                        </span>
+                      ) : <span className="dcv-dash">—</span>}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {step != null ? (
+                        <span className="dcv-pill" style={{ color: stepColor, background: stepColor + '20' }}>
+                          <span style={{ color: '#e5e7eb' }}>{stepLabel}</span>
+                        </span>
+                      ) : <span className="dcv-dash">—</span>}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <div className="dcv-files">
+                        <span className="dcv-files-num">{r.siftFiles != null ? r.siftFiles.toLocaleString() : '—'}</span>
+                        <span className="dcv-files-label">sift</span>
+                        <span className="dcv-files-num muted">{r.copiedFiles != null ? r.copiedFiles.toLocaleString() : '—'}</span>
+                        <span className="dcv-files-label">copied</span>
+                        <span className="dcv-files-num dim">{r.reattributedFiles != null ? r.reattributedFiles.toLocaleString() : '—'}</span>
+                        <span className="dcv-files-label">reattr</span>
+                      </div>
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {meet ? (
+                        <span className="dcv-chip" style={{ background: meet.bg, color: meet.fg, borderColor: 'transparent' }}>
+                          {meet.label}
+                        </span>
+                      ) : <span className="dcv-dash">—</span>}
+                    </td>
+                    <td className="dcv-muted" style={{ whiteSpace: 'nowrap' }}>
+                      {r.crmLiaison || <span className="dcv-dash">—</span>}
+                    </td>
+                    <td className="dcv-dash" style={{ textAlign: 'right' }}>⋯</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function WaterfallPage() {
   const totalSift = useKpi('total-sift-objects')
   const siftBqGcs = useKpi('sift-objects-bq-gcs')
@@ -459,77 +777,42 @@ function FileProfiling({ refreshKey }) {
     loading: profile.loading,
     error: profile.error,
   })
-  const totalFiles = mk('Total Files')
+  const totalFiles = { value: 226400000, loading: false, error: null }
+  const deletedInTiKpi = { value: 1100000, loading: false, error: null }
+  const duplicatesKpi = mk('Duplicates')
+  const exclusionsKpi = mk('Exclusions')
+  const potentialExclusionsKpi = mk('Potential Exclusions')
+  const PRESERVATION_FILES = 209980000
+  const filesForHarvestingKpi = {
+    value: (duplicatesKpi.value != null && exclusionsKpi.value != null && potentialExclusionsKpi.value != null)
+      ? PRESERVATION_FILES - duplicatesKpi.value - exclusionsKpi.value - potentialExclusionsKpi.value
+      : null,
+    loading: duplicatesKpi.loading || exclusionsKpi.loading || potentialExclusionsKpi.loading,
+    error: duplicatesKpi.error || exclusionsKpi.error || potentialExclusionsKpi.error,
+  }
+  const pendingPreservationKpi = {
+    value: deletedInTiKpi.value != null
+      ? totalFiles.value - PRESERVATION_FILES - deletedInTiKpi.value
+      : null,
+    loading: deletedInTiKpi.loading,
+    error: deletedInTiKpi.error,
+  }
   const barRows = [
-    { label: 'Total Files',          kpi: totalFiles,                 color: '#5b21b6', note: '~100K compressed' },
-    { label: 'Files Deleted in TI (confirmed with TELUS team)', kpi: mk('Deleted In TI'),        color: '#6b7280' },
-    { label: 'Duplicates',           kpi: mk('Duplicates'),           color: '#f59e0b' },
-    { label: 'Exclusions',           kpi: mk('Exclusions'),           color: '#fb7185' },
-    { label: 'Potential Exclusions (Pending Confirmation)', kpi: mk('Potential Exclusions'), color: '#f97316' },
-    { label: 'Files For Harvesting', kpi: mk('Files For Harvesting'), color: '#22c55e' },
-    { label: 'Pending Preservation', kpi: mk('Pending Preservation'), color: '#d946ef' },
-  ]
-
-  const distKpi = useKpi('file-distribution', refreshKey)
-  const distRows = Array.isArray(distKpi.value) ? distKpi.value : []
-  const distMap = Object.fromEntries(distRows.map(r => [r.name, r.value]))
-  const distTotal = distRows.reduce((s, r) => s + (Number(r.value) || 0), 0)
-  const distPct = (n) => distTotal > 0 ? (n || 0) / distTotal * 100 : 0
-  const dist = [
-    { label: 'Structured',                      count: distMap['Structured'] || 0,                      pct: distPct(distMap['Structured']),                      color: C.purple },
-    { label: 'Unstructured',                    count: distMap['Unstructured'] || 0,                    pct: distPct(distMap['Unstructured']),                    color: C.teal },
-    { label: 'Media Files',                     count: distMap['Media Files'] || 0,                     pct: distPct(distMap['Media Files']),                     color: C.orange },
-    { label: 'Semi Structured/Technical Docs',  count: distMap['Semi Structured/Technical Docs'] || 0,  pct: distPct(distMap['Semi Structured/Technical Docs']),  color: C.blue },
-    { label: 'Others',                          count: distMap['Others'] || 0,                          pct: distPct(distMap['Others']),                          color: C.gray },
+    { label: 'Total Exfil Files',    kpi: totalFiles,                 color: '#5b21b6' },
+    { label: 'Files Deleted in TI (confirmed with TELUS team)', kpi: deletedInTiKpi,             color: '#6b7280' },
+    { label: 'Duplicates',           kpi: duplicatesKpi,              color: '#f59e0b' },
+    { label: 'Exclusions',           kpi: exclusionsKpi,              color: '#fb7185' },
+    { label: 'Potential Exclusions (Pending Confirmation)', kpi: potentialExclusionsKpi, color: '#f97316' },
+    { label: 'Files For Harvesting', kpi: filesForHarvestingKpi,      color: '#22c55e' },
+    { label: 'Pending Preservation', kpi: pendingPreservationKpi,     color: '#d946ef' },
   ]
 
   return (
-    <div className="card">
+    <div className="card tile-files">
       <div className="card-head">
         <div className="card-title"><FileText size={14} /> File Profiling</div>
-        <button
-          onClick={() => window.open('?view=waterfall', '_blank', 'noopener,noreferrer')}
-          style={{
-            background: 'transparent', border: '1px solid #374151',
-            color: '#fbbf24', borderRadius: 6, padding: '3px 10px',
-            fontSize: 11, cursor: 'pointer',
-          }}
-          title="Open waterfall in a new tab"
-        >
-          Click here for waterfall ↗
-        </button>
       </div>
       <BurndownBars rows={barRows} max={totalFiles.value} />
-      <div className="dist-section">
-        <div className="dist-head">
-          <span className="dist-title">FILE DISTRIBUTION</span>
-        </div>
-        <div className="dist-bar">
-          {dist.map(d => (
-            <div
-              key={d.label}
-              style={{ width: `${Math.max(1, d.pct)}%`, background: d.color, cursor: 'help' }}
-              title={`${d.label}: ${d.count.toLocaleString()} (${d.pct.toFixed(1)}%)`}
-            />
-          ))}
-        </div>
-        <div className="dist-legend">
-          {dist.map(d => (
-            <div
-              key={d.label}
-              className="dl-row"
-              title={`${d.label}: ${d.count.toLocaleString()} (${d.pct.toFixed(1)}%)`}
-              style={{ cursor: 'help' }}
-            >
-              <span className="legend-dot" style={{ background: d.color }} />
-              <span className="dl-label">{d.label}</span>
-              <span className="dl-val">
-                {distKpi.loading ? '…' : distKpi.error ? 'err' : `${formatCompact(d.count)} (${d.pct.toFixed(0)}%)`}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   )
 }
@@ -540,13 +823,19 @@ function FileHarvesting({ refreshKey }) {
   const gcsFiles = useKpi('gcs-files', refreshKey)
   const rawRecords = useKpi('raw-records', refreshKey)
   const profiling = useKpi('file-profiling', refreshKey)
+  const PRESERVATION_FILES = 209980000
+  const dup = profiling.value?.['Duplicates']
+  const exc = profiling.value?.['Exclusions']
+  const potExc = profiling.value?.['Potential Exclusions']
   const pendingHarvesting = {
-    value: profiling.value?.['Files For Harvesting'] ?? null,
+    value: (dup != null && exc != null && potExc != null)
+      ? PRESERVATION_FILES - dup - exc - potExc
+      : null,
     loading: profiling.loading,
     error: profiling.error,
   }
 
-  const processedVal = 5202 + 1302760 + 9500
+  const processedVal = 1321462
   const pendingHarvVal = pendingHarvesting.value ?? 0
   const ready = !pendingHarvesting.loading && !pendingHarvesting.error
   const completePct = pendingHarvVal > 0 ? Math.min(100, (processedVal / pendingHarvVal) * 100) : 0
@@ -555,7 +844,7 @@ function FileHarvesting({ refreshKey }) {
   const remainingVal = Math.max(0, pendingHarvVal - processedVal)
 
   return (
-    <div className="card">
+    <div className="card tile-files">
       <div className="card-head">
         <div className="card-title"><Database size={14} /> File Harvesting</div>
         <span className="badge">TBD</span>
@@ -589,7 +878,7 @@ function FileHarvesting({ refreshKey }) {
         </div>
       </div>
       <div className="harv-total">
-        <div className="harv-num xl"><CountUp value={50010000} /></div>
+        <div className="harv-num xl"><CountUp value={120975260} /></div>
         <div className="muted-small">Raw Records</div>
       </div>
     </div>
@@ -599,6 +888,7 @@ function FileHarvesting({ refreshKey }) {
 function CustomerAttribution() {
   const singleAttributed = 0
   const notAttributed = 0
+  const totalCustomers = 0
   const total = singleAttributed + notAttributed
   const data = total > 0
     ? [
@@ -608,10 +898,10 @@ function CustomerAttribution() {
     : [{ name: 'No data', value: 1, color: 'rgba(255,255,255,0.08)' }]
   const pct = (v) => total > 0 ? `${Math.round((v / total) * 100)}%` : '0%'
   return (
-    <div className="card">
+    <div className="card tile-customers">
       <div className="card-head">
         <div className="card-title"><Users size={14} /> Customer Attribution</div>
-        <span className="badge">0 Files</span>
+        <span className="badge">{total.toLocaleString()} Files</span>
       </div>
       <div className="donut-wrap" style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -635,7 +925,7 @@ function CustomerAttribution() {
           alignItems: 'center', justifyContent: 'center',
           pointerEvents: 'none', textAlign: 'center',
         }}>
-          <div className="attr-num">0</div>
+          <div className="attr-num">{totalCustomers}</div>
           <div className="muted-small">Total Customers</div>
         </div>
       </div>
@@ -657,7 +947,7 @@ function CustomerAttribution() {
 
 function DataComplexion() {
   return (
-    <div className="card">
+    <div className="card tile-files">
       <div className="card-head">
         <div className="card-title"><Database size={14} /> Data Complexion</div>
       </div>
@@ -681,8 +971,7 @@ function CustomerTriageProcess({ triage }) {
     const extras = (STEP_CUSTOMER_OVERRIDES[s.name] ?? []).filter(c => !s.customers.includes(c))
     return extras.length ? { ...s, customers: [...s.customers, ...extras] } : s
   })
-  const step1 = steps.find(s => s.name === 'Step 1')?.customers ?? []
-  const total = new Set(step1.map(c => c.trim().split(/\s+/)[0].toLowerCase())).size
+  const total = triage.data?.totals?.uniqueCustomers ?? 0
   const outreachStatuses = triage.data?.outreach?.statuses ?? []
   const outreachByCustomer = {}
   for (const st of outreachStatuses) {
@@ -691,22 +980,31 @@ function CustomerTriageProcess({ triage }) {
     }
   }
   return (
-    <div className="card triage-card">
+    <div className="card triage-card tile-customers">
       <div className="triage-head">
         <div>
           <div className="card-title"><GitBranch size={14} /> Customer Triage Process</div>
           <div className="muted-small">End-to-end workflow from SIFT Search to Customer Interaction</div>
         </div>
-        <div className="triage-stat">
-          <div className="triage-num">{triage.loading ? '…' : (triage.error ? 'err' : total)}</div>
-          <div className="muted-small">Total Customers in Pipeline</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            className="glass-tab"
+            onClick={() => window.open('?view=customers', '_blank', 'noopener,noreferrer')}
+            title="Open the detailed customer view in a new tab"
+          >
+            <span className="glass-tab-dot" />
+            <span>Detailed customer view</span>
+            <span className="glass-tab-arrow">↗</span>
+          </button>
+          <div className="triage-stat">
+            <div className="triage-num">{triage.loading ? '…' : (triage.error ? 'err' : total)}</div>
+            <div className="muted-small">Total Customers in Pipeline</div>
+          </div>
         </div>
       </div>
       <div className="step-grid">
         {steps.map(s => {
-          const uniqueCount = new Set(
-            s.customers.map(c => c.trim().split(/\s+/)[0].toLowerCase())
-          ).size
+          const uniqueCount = s.uniqueCount ?? s.customers.length
           return (
             <div className="step-pill" key={s.name + '-pill'}>
               <div className="step-num">{s.name}</div>
@@ -763,7 +1061,7 @@ function CustomerSentiment({ triage }) {
   const red = get('Red')
   const total = triage.data?.sentiment?.total ?? categories.reduce((s, d) => s + (d.count ?? 0), 0)
   return (
-    <div className="card">
+    <div className="card tile-customers">
       <div className="card-head">
         <div>
           <div className="card-title"><Users size={14} /> Customer Sentiment</div>
@@ -796,7 +1094,7 @@ function CustomerOutreach({ triage }) {
   const total = triage.data?.outreach?.total ?? statuses.reduce((s, d) => s + (d.count ?? 0), 0)
   const yMax = Math.max(1, ...statuses.map(d => d.count ?? 0))
   return (
-    <div className="card">
+    <div className="card tile-customers">
       <div className="card-head">
         <div>
           <div className="card-title"><Users size={14} /> Customer Outreach</div>
@@ -916,12 +1214,20 @@ export default function App() {
   const view = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search).get('view')
     : null
-  if (view === 'waterfall') {
+  if (view === 'customers') {
     return (
       <RefreshContext.Provider value={0}>
-        <div className="app dark"><WaterfallPage /></div>
+        <div className="app dark"><DetailedCustomerView /></div>
       </RefreshContext.Provider>
     )
   }
+  // Waterfall view disabled — keep code below for future re-enable.
+  // if (view === 'waterfall') {
+  //   return (
+  //     <RefreshContext.Provider value={0}>
+  //       <div className="app dark"><WaterfallPage /></div>
+  //     </RefreshContext.Provider>
+  //   )
+  // }
   return <MainApp />
 }
