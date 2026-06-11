@@ -17,7 +17,6 @@ import {
   LabelList,
 } from 'recharts'
 import './App.css'
-import { ExecSection } from './ExecSection.jsx'
 
 function formatCompact(n) {
   if (n == null) return '—'
@@ -2568,7 +2567,18 @@ function MainApp() {
         lastRefreshed={lastRefreshed}
       />
       <main className="main">
-        <ExecSection />
+        <FilePreservation refreshKey={refreshKey} />
+        <div className="grid-4">
+          <FileProfiling refreshKey={refreshKey} />
+          <FileHarvesting refreshKey={refreshKey} />
+          <DataComplexion refreshKey={refreshKey} />
+        </div>
+        <CustomerSentiment triage={triage} />
+        <div className="grid-bottom">
+          <CustomerTriageProcess triage={triage} />
+          <CustomerOutreach triage={triage} />
+        </div>
+        <CustomerInteractionWorkflow triage={triage} />
       </main>
     </div>
     </RefreshContext.Provider>
@@ -2576,7 +2586,7 @@ function MainApp() {
 }
 
 // Consolidated full page with every customer-related section, opened from the
-// "All customer pages" tile.
+// "All customer pages" tile on the Customer Triage Process.
 function CustomerAllPage() {
   const triage = useTriage(0)
   return (
@@ -2591,6 +2601,7 @@ function CustomerAllPage() {
         <CustomerOutreach triage={triage} />
       </div>
       <CustomerInteractionWorkflow triage={triage} />
+      <DetailedCustomerView />
     </div>
   )
 }
@@ -2616,7 +2627,7 @@ export default function App() {
   if (view === 'complexion') {
     return (
       <RefreshContext.Provider value={0}>
-        <div className="app dark dc-standalone">
+        <div className="app dark" style={{ minHeight: '100vh', padding: 16, boxSizing: 'border-box' }}>
           <DataComplexion refreshKey={0} />
         </div>
       </RefreshContext.Provider>

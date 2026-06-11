@@ -1,13 +1,56 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import xlsx from 'xlsx'
+import { Storage } from '@google-cloud/storage'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_XLSX = path.resolve(__dirname, '..', 'Mosaic Customer Tracker.xlsx')
-const TRACKER_PATH = process.env.TRACKER_XLSX || DEFAULT_XLSX
+const TRACKER_GCS = process.env.TRACKER_GCS || ''
+const LOCAL_CACHE_PATH = path.join(os.tmpdir(), 'mosaic-tracker.xlsx')
+const TRACKER_PATH = process.env.TRACKER_XLSX
+  || (TRACKER_GCS ? LOCAL_CACHE_PATH : DEFAULT_XLSX)
 const TRACKER_TAB = process.env.TRACKER_TAB || 'Priority Customer Tracker'
 const OPS_TAB = process.env.OPS_TAB || 'Internal Ops Team Tracker (Deta'
+
+let lastGeneration = null
+let gcsDownloadPromise = null
+let storageClient = null
+
+function getStorage() {
+  if (!storageClient) storageClient = new Storage()
+  return storageClient
+}
+
+// Returns true when a fresh xlsx was just pulled from GCS (caller should bust
+// any downstream caches). Compares the GCS object's generation number against
+// the last one we downloaded; only re-downloads when it changes.
+export async function ensureTrackerFromGcs() {
+  if (!TRACKER_GCS) return false
+  const m = TRACKER_GCS.match(/^gs:\/\/([^/]+)\/(.+)$/)
+  if (!m) throw new Error(`Invalid TRACKER_GCS, expected gs://bucket/path: ${TRACKER_GCS}`)
+  const [, bucket, object] = m
+
+  const [meta] = await getStorage().bucket(bucket).file(object).getMetadata()
+  const currentGen = String(meta.generation)
+
+  if (lastGeneration === currentGen && fs.existsSync(LOCAL_CACHE_PATH)) {
+    return false
+  }
+
+  if (!gcsDownloadPromise) {
+    gcsDownloadPromise = (async () => {
+      await getStorage().bucket(bucket).file(object).download({ destination: LOCAL_CACHE_PATH })
+      lastGeneration = currentGen
+      console.log(`[triage] downloaded gs://${bucket}/${object}#${currentGen} -> ${LOCAL_CACHE_PATH}`)
+    })().finally(() => {
+      gcsDownloadPromise = null
+    })
+  }
+  await gcsDownloadPromise
+  return true
+}
 
 const STEP_META = [
   { name: 'Step 0', title: 'Analytics on Hold',    description: 'Customers on hold for analytics — not escalated' },
@@ -21,12 +64,12 @@ const STEP_META = [
 // Maps the raw "Comms Outreach Status" cell value to the short bucket name
 // used by the Customer Outreach tile in the dashboard.
 const OUTREACH_BUCKETS = [
-  { name: 'M0',    label: 'Meeting 0',         match: /^meeting\s*0$/i,           color: '#9ca3af' },
-  { name: 'Hold',  label: 'On Hold',           match: /\bhold\b/i,                 color: '#6b7280' },
-  { name: 'M1',    label: 'Meeting 1',         match: /^meeting\s*1$/i,           color: '#8b5cf6' },
+  { name: 'M0',    label: 'Meeting 0',         match: /^meeting\s*0$/i,           color: '#86efac' },
+  { name: 'Hold',  label: 'On Hold',           match: /\bhold\b/i,                 color: '#a855f7' },
+  { name: 'M1',    label: 'Meeting 1',         match: /^meeting\s*1$/i,           color: '#15803d' },
   { name: 'Recur', label: 'Recurring Meeting', match: /recurring/i,                color: '#3b82f6' },
-  { name: 'M2',    label: 'Meeting 2',         match: /^meeting\s*2$/i,           color: '#f9a8d4' },
-  { name: 'M3',    label: 'Meeting 3',         match: /^meeting\s*3$/i,           color: '#c026d3' },
+  { name: 'M2',    label: 'Meeting 2',         match: /^meeting\s*2$/i,           color: '#fb7185' },
+  { name: 'M3',    label: 'Meeting 3',         match: /^meeting\s*3$/i,           color: '#dc2626' },
 ]
 
 const SENTIMENT_BUCKETS = [
@@ -104,8 +147,13 @@ function loadStep1FromOps(wb) {
   const siftRunIdx = headers.findIndex(h => /has\s*sift\s*search\s*been\s*run/i.test(h))
   if (customerIdx === -1 || siftRunIdx === -1) return null
   const customers = []
-  const seenCust = new Set()
+  const seenDisplay = new Set()
   const uniqueSet = new Set()
+  // Membership set for step1Set.has(customer) — contains both the raw ops-sheet
+  // Customer values AND their Unique Customer rollup, so the priority-tracker
+  // lookup matches whichever form that sheet uses (e.g. "CIBC" rolls up CIBC
+  // CX/TDO/TDS variants from the ops sheet).
+  const membership = new Set()
   for (let r = headerIdx + 1; r < rows.length; r++) {
     const row = rows[r]
     if (!row) continue
@@ -113,18 +161,19 @@ function loadStep1FromOps(wb) {
     if (val !== 'yes') continue
     const cust = String(row[customerIdx] ?? '').replace(/\s+/g, ' ').trim()
     if (!cust) continue
-    if (!seenCust.has(cust)) {
-      seenCust.add(cust)
-      customers.push(cust)
-    }
-    if (uniqueIdx !== -1) {
-      const u = String(row[uniqueIdx] ?? '').replace(/\s+/g, ' ').trim()
-      uniqueSet.add(u || cust)
-    } else {
-      uniqueSet.add(cust)
+    const uniq = uniqueIdx !== -1
+      ? (String(row[uniqueIdx] ?? '').replace(/\s+/g, ' ').trim() || cust)
+      : cust
+    uniqueSet.add(uniq)
+    membership.add(cust)
+    membership.add(uniq)
+    // Display name: use the unique-customer name so CIBC CX/TDO/TDS collapse to "CIBC".
+    if (!seenDisplay.has(uniq)) {
+      seenDisplay.add(uniq)
+      customers.push(uniq)
     }
   }
-  return { customers, uniqueCount: uniqueSet.size }
+  return { customers, uniqueCount: uniqueSet.size, membership }
 }
 
 // The Priority Customer Tracker has a title/section banner above the real
@@ -151,19 +200,39 @@ function locateColumns(headers) {
     if (idx !== -1) stepCols[5] = idx
   }
   const sentimentIdx = headers.findIndex(h => /^customer sentiment$/i.test(h))
+  // Yesterday's snapshot of Customer Sentiment; compared against sentimentIdx to
+  // derive escalated / de-escalated moves.
+  const prevSentimentIdx = headers.findIndex(h => /previous\s*day\s*sentiment/i.test(h))
   const reattributedIdx = headers.findIndex(h => /reattributed\s*customer\s*files/i.test(h))
   const attributedIdx = headers.findIndex(h => /^#\s*of\s*attributed\s*customer\s*files/i.test(h))
   const uniqueCustomerIdx = headers.findIndex(h => /^unique\s*customer$/i.test(h))
   const priorityIdx = headers.findIndex(h => /^priority\s*order$/i.test(h))
-  const requestDateIdx = headers.findIndex(h => /initial\s*customer\s*request\s*date/i.test(h))
+  // "Initial PwC Interaction Date" on the dashboard maps to the spreadsheet's
+  // "Initial Customer Interaction Pwc with CRMs" column — the column previously
+  // labelled "Initial Customer Request Date" is empty in current trackers.
+  const requestDateIdx = headers.findIndex(h => /initial\s*customer\s*interaction\s*pwc\s*with\s*crms/i.test(h))
   const daysActiveIdx = headers.findIndex(h => /^days\s*active$/i.test(h))
   const crmIdx = headers.findIndex(h => /^crm\s*liaison$/i.test(h))
   const meeting0DateIdx = headers.findIndex(h => /^date\s*of\s*meeting\s*0$/i.test(h))
+  const businessLineIdx = headers.findIndex(h => /^business\s*line$/i.test(h))
+  const escalationIdx = headers.findIndex(h => /^escalation\s*reasoning$/i.test(h))
+  // "Furthest Meeting Completed" — located by header name (column position
+  // varies between tracker versions), used to tag CIW customers like "Uber (M2)".
+  const furthestMeetingIdx = headers.findIndex(h => /furthest\s*meeting/i.test(h))
   return {
-    customerIdx, stepCols, sentimentIdx, reattributedIdx, attributedIdx,
+    customerIdx, stepCols, sentimentIdx, prevSentimentIdx, reattributedIdx, attributedIdx,
     uniqueCustomerIdx, priorityIdx, requestDateIdx, daysActiveIdx, crmIdx,
-    meeting0DateIdx,
+    meeting0DateIdx, businessLineIdx, escalationIdx, furthestMeetingIdx,
   }
+}
+
+// "Meeting 2" / "M2" / "meeting2" → "M2". Returns '' for blanks or non-meeting
+// values (e.g. "Hold", "Recurring Meeting") so no tag is shown for those.
+function furthestMeetingTag(raw) {
+  const s = normalize(raw)
+  if (!s) return ''
+  const m = s.match(/(?:meeting|^m)\s*(\d+)/i)
+  return m ? `M${m[1]}` : ''
 }
 
 // True iff the cell holds a real date value (Date, Excel serial number, or a
@@ -212,6 +281,7 @@ function bucketForSentiment(raw) {
 }
 
 export async function getTriageBuckets() {
+  await ensureTrackerFromGcs()
   const wb = loadWorkbook()
   const rows = loadSheetRows(wb)
   const step1Override = loadStep1FromOps(wb)
@@ -231,9 +301,9 @@ export async function getTriageBuckets() {
   }
   const headers = (rows[headerRowIdx] || []).map(normalize)
   const {
-    customerIdx, stepCols, sentimentIdx, reattributedIdx, attributedIdx,
+    customerIdx, stepCols, sentimentIdx, prevSentimentIdx, reattributedIdx, attributedIdx,
     uniqueCustomerIdx, priorityIdx, requestDateIdx, daysActiveIdx, crmIdx,
-    meeting0DateIdx,
+    meeting0DateIdx, businessLineIdx, escalationIdx, furthestMeetingIdx,
   } = locateColumns(headers)
   if (customerIdx === -1) {
     throw new Error(`Could not find "Customer" column. Headers: ${headers.join(' || ')}`)
@@ -248,6 +318,11 @@ export async function getTriageBuckets() {
   let outreachTotal = 0
   const sentimentByBucket = Object.fromEntries(SENTIMENT_BUCKETS.map(b => [b.name, []]))
   let sentimentTotal = 0
+  // Sentiment moves vs. yesterday's "Previous Day Sentiment" snapshot.
+  // escalated = got worse (Green→Yellow, Yellow→Red, …); deEscalated = improved.
+  const escalated = []
+  const deEscalated = []
+  const seenChange = new Set()
   const attributionCustomers = []
   let attributedFiles = 0
   let reattributedFiles = 0
@@ -262,12 +337,32 @@ export async function getTriageBuckets() {
   // Customer → sentiment bucket name ('Red' | 'Yellow' | 'Green' | ''), used to
   // sort step buckets so risk reads top-down: Red, Yellow, Green, unknown.
   const custToSentiment = new Map()
+  // Unique-customer rollup → worst sentiment among its variants. Step 1 uses
+  // the rollup name (e.g. "Google" for Google CX + Google AI), so the per-row
+  // sentiment under raw customer names won't match without this rollup.
+  const uniqueWorstSentiment = new Map()
+  const SENT_SEVERITY = { Red: 0, Yellow: 1, Green: 2 }
+  // Customers with "Has SIFT search been run? (Step 1 in Dashboard) = Yes" on
+  // the Internal Ops Team Tracker. Drives Step 1 for both the bucket override
+  // above and the per-row currentStep below.
+  const step1Set = step1Override?.membership ?? new Set(step1Override ? step1Override.customers : [])
+  // Customer → furthest meeting tag ("M0".."M3") from the "Furthest Meeting
+  // Completed" column, used to annotate names in the Customer Interaction Workflow.
+  const furthestByCustomer = {}
 
   for (let r = dataStart; r < rows.length; r++) {
     const row = rows[r]
     if (!row) continue
     const customer = normalize(row[customerIdx])
     if (!customer) continue
+    {
+      // Prefer a dedicated "Furthest Meeting Completed" column; fall back to the
+      // "Comms Outreach Status" column (Meeting 0/1/2/3), which is the only
+      // meeting value present in current trackers. Hold/Recurring yield no tag.
+      const meetingSrcIdx = furthestMeetingIdx !== -1 ? furthestMeetingIdx : stepCols[5]
+      const tag = meetingSrcIdx != null ? furthestMeetingTag(row[meetingSrcIdx]) : ''
+      if (tag && !furthestByCustomer[customer]) furthestByCustomer[customer] = tag
+    }
     const uniqueName = uniqueCustomerIdx !== -1 ? normalize(row[uniqueCustomerIdx]) : ''
     if (uniqueName) allCustomers.add(uniqueName)
     else allCustomers.add(customer)
@@ -303,6 +398,23 @@ export async function getTriageBuckets() {
         sentimentByBucket[sBucket.name].push(customer)
         sentimentTotal += 1
         if (!custToSentiment.has(customer)) custToSentiment.set(customer, sBucket.name)
+        if (uniqueName && uniqueName !== customer) {
+          const prev = uniqueWorstSentiment.get(uniqueName)
+          if (!prev || SENT_SEVERITY[sBucket.name] < SENT_SEVERITY[prev]) {
+            uniqueWorstSentiment.set(uniqueName, sBucket.name)
+          }
+        }
+        // Compare against yesterday's snapshot to classify the move.
+        if (prevSentimentIdx !== -1 && !seenChange.has(customer)) {
+          const prevBucket = bucketForSentiment(row[prevSentimentIdx])
+          if (prevBucket && prevBucket.name !== sBucket.name) {
+            seenChange.add(customer)
+            const reason = escalationIdx !== -1 ? normalize(row[escalationIdx]) : ''
+            const move = { customer, from: prevBucket.name, to: sBucket.name, reason }
+            if (SENT_SEVERITY[sBucket.name] < SENT_SEVERITY[prevBucket.name]) escalated.push(move)
+            else deEscalated.push(move)
+          }
+        }
       }
     }
 
@@ -321,24 +433,32 @@ export async function getTriageBuckets() {
       if (reattrOk) reattributedFiles += reattrVal
     }
 
-    // Per-customer detail row for the Detailed Customer View page.
-    // Analytics current step = furthest reached among steps 0-4.
-    // Customers with later progression beat Step 0 (on hold); Step 0 only
-    // wins when no other step has data.
-    let currentStep = null
-    for (let s = 4; s >= 0; s--) {
-      const idx = stepCols[s]
-      if (idx == null) continue
-      const cell = row[idx]
-      const include = s === 0
-        ? /analytics\s*on\s*hold/i.test(normalize(cell))
-        : hasValue(cell)
-      if (include) { currentStep = s; break }
-    }
     // SIFT files column lost its "Step 1 in Dashboard" tag; fall back to a name match.
     const siftFilesCol = stepCols[1] ?? headers.findIndex(h => /initial\s*sift\s*files/i.test(h))
     const copiedFilesCol = stepCols[2]
     const extractedFilesCol = stepCols[4]
+    // Per-customer detail row for the Detailed Customer View page.
+    // Analytics current step = furthest reached among steps 0-4.
+    // Customers with later progression beat Step 0 (on hold); Step 0 only
+    // wins when no other step has data. Step 1 keys off the Internal Ops Team
+    // Tracker's "Has SIFT search been run? (Step 1 in Dashboard) = Yes" answer
+    // — the same source the Step 1 triage bucket uses — so the per-row step
+    // stays consistent with the bucket assignment.
+    let currentStep = null
+    for (let s = 4; s >= 0; s--) {
+      let include
+      if (s === 1) {
+        include = step1Set.has(customer)
+      } else {
+        const idx = stepCols[s]
+        if (idx == null || idx === -1) continue
+        const cell = row[idx]
+        include = s === 0
+          ? /analytics\s*on\s*hold/i.test(normalize(cell))
+          : hasValue(cell)
+      }
+      if (include) { currentStep = s; break }
+    }
     const num = (v) => {
       const n = Number(v)
       return Number.isFinite(n) ? n : null
@@ -358,9 +478,12 @@ export async function getTriageBuckets() {
       siftFiles: siftFilesCol != null ? num(row[siftFilesCol]) : null,
       copiedFiles: copiedFilesCol != null ? num(row[copiedFilesCol]) : null,
       reattributedFiles: reattributedIdx !== -1 ? num(row[reattributedIdx]) : null,
+      attributedFiles: attributedIdx !== -1 ? num(row[attributedIdx]) : null,
       extractedFiles: extractedFilesCol != null ? num(row[extractedFilesCol]) : null,
       outreachStatus: stepCols[5] != null ? normalize(row[stepCols[5]]) : '',
       crmLiaison: crmIdx !== -1 ? normalize(row[crmIdx]) : '',
+      businessLine: businessLineIdx !== -1 ? normalize(row[businessLineIdx]) : '',
+      escalationReason: escalationIdx !== -1 ? normalize(row[escalationIdx]) : '',
     })
   }
 
@@ -389,6 +512,12 @@ export async function getTriageBuckets() {
     }
   }
 
+  // Fold unique-rollup sentiment into the per-customer map so Step 1 (which
+  // carries the rollup name like "Google") sorts and colors correctly.
+  for (const [u, name] of uniqueWorstSentiment) {
+    if (!custToSentiment.has(u)) custToSentiment.set(u, name)
+  }
+
   const alpha = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })
   // Risk-first sort for the triage step buckets: Red → Yellow → Green → unknown,
   // alphabetical within each tier.
@@ -413,6 +542,20 @@ export async function getTriageBuckets() {
     })),
     total: outreachTotal,
   }
+  const bucketMetaByName = Object.fromEntries(
+    SENTIMENT_BUCKETS.map(b => [b.name, { name: b.name, label: b.label, color: b.color }])
+  )
+  // Per-customer sentiment lookup the dashboard uses to tint step pills.
+  // Includes both raw customer names (from the Priority Tracker) and unique
+  // rollup names (used by Step 1) so e.g. "Google" resolves to Red.
+  const byCustomer = {}
+  for (const [c, name] of custToSentiment) {
+    if (bucketMetaByName[name]) byCustomer[c] = bucketMetaByName[name]
+  }
+  // Escalated reads worst-new-sentiment first (Red before Yellow); de-escalated
+  // reads best-new-sentiment first (Green before Yellow). Alphabetical within a tier.
+  const byNewWorst = (a, b) => (SENT_SEVERITY[a.to] - SENT_SEVERITY[b.to]) || alpha(a.customer, b.customer)
+  const byNewBest = (a, b) => (SENT_SEVERITY[b.to] - SENT_SEVERITY[a.to]) || alpha(a.customer, b.customer)
   const sentiment = {
     categories: SENTIMENT_BUCKETS.map(b => ({
       name: b.name,
@@ -421,6 +564,11 @@ export async function getTriageBuckets() {
       count: sentimentByBucket[b.name].length,
       customers: [...sentimentByBucket[b.name]].sort(alpha),
     })),
+    byCustomer,
+    changes: {
+      escalated: escalated.sort(byNewWorst),
+      deEscalated: deEscalated.sort(byNewBest),
+    },
     total: sentimentTotal,
   }
   const attribution = {
@@ -433,6 +581,7 @@ export async function getTriageBuckets() {
   return {
     steps,
     outreach,
+    furthestByCustomer,
     sentiment,
     attribution,
     details: [...details].sort((a, b) => alpha(a.customer, b.customer)),
