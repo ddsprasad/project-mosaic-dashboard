@@ -485,15 +485,17 @@ function downloadCustomersPdf(rows) {
       r.siftFiles != null ? `${r.siftFiles.toLocaleString()} sift` : '— sift',
       r.copiedFiles != null ? `${r.copiedFiles.toLocaleString()} copied` : '— copied',
       r.attributedFiles != null ? `${r.attributedFiles.toLocaleString()} attr` : '— attr',
+      r.releFiles != null ? `${r.releFiles.toLocaleString()} RELE` : '— RELE',
       r.extractedFiles != null ? `${r.extractedFiles.toLocaleString()} extracted` : '— extracted',
     ].join('\n'),
+    r.extractionPct || '—',
     outreachChip(r.outreachStatus)?.label ?? '—',
     r.crmLiaison || '—',
   ])
 
   autoTable(pdf, {
     startY: 72,
-    head: [['Customer', 'Initial PwC Interaction Date', 'Days Active', 'Sentiment', 'Analytics Step', 'Files', 'Meeting', 'CRM Liaison']],
+    head: [['Customer', 'Initial PwC Interaction Date', 'Days Active', 'Sentiment', 'Analytics Step', 'Files', '% Extraction Complete', 'Meeting', 'CRM Liaison']],
     body,
     theme: 'grid',
     margin: { left: 24, right: 24 },
@@ -522,8 +524,9 @@ function downloadCustomersPdf(rows) {
       3: { cellWidth: 54 },
       4: { cellWidth: 74 },
       5: { cellWidth: 100 },
-      6: { cellWidth: 62 },
-      7: { cellWidth: 'auto' },
+      6: { cellWidth: 56 },
+      7: { cellWidth: 62 },
+      8: { cellWidth: 'auto' },
     },
     didParseCell: (data) => {
       if (data.section !== 'body') return
@@ -960,7 +963,7 @@ function DetailedCustomerView() {
   }
   const headers = [
     'Customer', 'Initial PwC Interaction Date', 'Days Active', 'Sentiment',
-    'Analytics Current step', 'Files', 'Meeting Status', 'CRM Liaison',
+    'Analytics Current step', 'Files', '% Extraction Complete', 'Meeting Status', 'CRM Liaison',
   ]
   const handlePdfDownload = async () => {
     if (downloading) return
@@ -1147,9 +1150,14 @@ function DetailedCustomerView() {
                         <span className="dcv-files-label">copied</span>
                         <span className="dcv-files-num dim">{r.attributedFiles != null ? r.attributedFiles.toLocaleString() : '—'}</span>
                         <span className="dcv-files-label">attr</span>
+                        <span className="dcv-files-num dim">{r.releFiles != null ? r.releFiles.toLocaleString() : '—'}</span>
+                        <span className="dcv-files-label">RELE</span>
                         <span className="dcv-files-num dim">{r.extractedFiles != null ? r.extractedFiles.toLocaleString() : '—'}</span>
                         <span className="dcv-files-label">extracted</span>
                       </div>
+                    </td>
+                    <td className="dcv-muted" style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                      {r.extractionPct || <span className="dcv-dash">—</span>}
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       {meet ? (

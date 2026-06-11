@@ -87,7 +87,8 @@ function Harvesting() {
     { label: 'Potential Excl.', value: 11140000 },
   ]
   const filesForHarvesting = totalExfil - steps.reduce((s, x) => s + x.value, 0)
-  const harvested = 3840000
+  const harvestedKpi = useKpi('total-harvested')
+  const harvested = (typeof harvestedKpi.value === 'number' && Number.isFinite(harvestedKpi.value)) ? harvestedKpi.value : 0
   const pendingHarv = Math.max(0, filesForHarvesting - harvested)
   const pctHarvested = filesForHarvesting > 0 ? (harvested / filesForHarvesting) * 100 : 0
   const bars = [
@@ -167,12 +168,13 @@ function MedallionArchitecture({ bronzeMetric, silverMetric, goldMetric }) {
 function Notification() {
   const rawRecords = useKpi('raw-records')
   const rawDisp = rawRecords.loading ? '…' : (rawRecords.error ? 'err' : formatCompact(rawRecords.value))
-  const harvested = 3840000
+  const harvestedKpi = useKpi('total-harvested')
+  const harvestedDisp = harvestedKpi.loading ? '…' : (harvestedKpi.error ? 'err' : formatCompact(harvestedKpi.value))
   return (
     <>
       <div className="er-ribbon">
         <div className="er-ribbon-cell">
-          <div className="er-ribbon-num" style={{ color: '#22c55e' }}>{formatCompact(harvested)}</div>
+          <div className="er-ribbon-num" style={{ color: '#22c55e' }}>{harvestedDisp}</div>
           <div className="er-ribbon-label">Total Harvested Files</div>
         </div>
       </div>

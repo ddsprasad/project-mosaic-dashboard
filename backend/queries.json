@@ -101,6 +101,11 @@
     "fields": ["TOTAL_FILES", "ZERO_BYTE_FILES", "final_variance"],
     "sql": "WITH total_files_cte AS (SELECT COUNT(*) AS bg_gcs_other_sources FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source != 'glean'), zero_byte_files_cte AS (SELECT COUNT(*) AS zero_byte_files FROM `cio-mosaic-analytics-pr-853ae3.sift_data.files` WHERE source != 'glean' AND is_dir = true) SELECT t.bg_gcs_other_sources AS TOTAL_FILES, z.zero_byte_files AS ZERO_BYTE_FILES, (t.bg_gcs_other_sources - z.zero_byte_files) AS final_variance FROM total_files_cte t CROSS JOIN zero_byte_files_cte z"
   },
+  "total-harvested": {
+    "label": "TOTAL HARVESTED FILES",
+    "field": "value",
+    "sql": "SELECT COUNT(*) AS value FROM `cio-mosaic-analytics-pr-853ae3.dlu.DataLakeUniverse` WHERE IsLoaded"
+  },
   "harvest-metrics": {
     "label": "HARVEST METRICS",
     "fields": ["total_files", "zero_byte_files", "duplicate_count"],

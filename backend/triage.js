@@ -145,6 +145,8 @@ function loadStep1FromOps(wb) {
   const customerIdx = headers.findIndex(h => /^customer$/i.test(h))
   const uniqueIdx = headers.findIndex(h => /^unique\s*customer$/i.test(h))
   const siftRunIdx = headers.findIndex(h => /has\s*sift\s*search\s*been\s*run/i.test(h))
+  // SIFT files count comes from "# of Validated SIFT Files in GCP" (col W).
+  const siftFilesIdx = headers.findIndex(h => /validated\s*sift\s*files\s*in\s*gcp/i.test(h))
   if (customerIdx === -1 || siftRunIdx === -1) return null
   const customers = []
   const seenDisplay = new Set()
@@ -154,16 +156,28 @@ function loadStep1FromOps(wb) {
   // lookup matches whichever form that sheet uses (e.g. "CIBC" rolls up CIBC
   // CX/TDO/TDS variants from the ops sheet).
   const membership = new Set()
+  // Validated SIFT files (col W), keyed by both the ops Customer name and its
+  // Unique Customer rollup, so a priority-tracker row can look it up by either.
+  const siftFilesByName = new Map()
   for (let r = headerIdx + 1; r < rows.length; r++) {
     const row = rows[r]
     if (!row) continue
-    const val = String(row[siftRunIdx] ?? '').trim().toLowerCase()
-    if (val !== 'yes') continue
     const cust = String(row[customerIdx] ?? '').replace(/\s+/g, ' ').trim()
     if (!cust) continue
     const uniq = uniqueIdx !== -1
       ? (String(row[uniqueIdx] ?? '').replace(/\s+/g, ' ').trim() || cust)
       : cust
+    // Capture the SIFT files count for every customer (independent of the
+    // "has SIFT run" flag), summing across a unique customer's variant rows.
+    if (siftFilesIdx !== -1) {
+      const sf = Number(row[siftFilesIdx])
+      if (Number.isFinite(sf)) {
+        siftFilesByName.set(cust, (siftFilesByName.get(cust) || 0) + sf)
+        if (uniq !== cust) siftFilesByName.set(uniq, (siftFilesByName.get(uniq) || 0) + sf)
+      }
+    }
+    const val = String(row[siftRunIdx] ?? '').trim().toLowerCase()
+    if (val !== 'yes') continue
     uniqueSet.add(uniq)
     membership.add(cust)
     membership.add(uniq)
@@ -173,7 +187,57 @@ function loadStep1FromOps(wb) {
       customers.push(uniq)
     }
   }
-  return { customers, uniqueCount: uniqueSet.size, membership }
+  return { customers, uniqueCount: uniqueSet.size, membership, siftFilesByName }
+}
+
+// Per-customer metrics from the "[Internal] Tiger Team Analytics Tracker"
+// (all matched by header, robust to column-letter drift):
+//   rele          : "# of Relevant Attributed Files"  (shown as RELE)
+//   extracted     : "# of Extracted Files"             (shown as "extracted")
+//   extractionPct : "Extraction % Completion"
+// Returns Map(customer -> { rele, extracted, extractionPct }).
+function loadTigerMetrics(wb) {
+  // Sheet name may be bracketed ("[Internal] …") and/or truncated by Excel's
+  // 31-char sheet-name limit.
+  const sheetName = wb.SheetNames.find(n => /tiger\s*team\s*analytics/i.test(n))
+    || wb.SheetNames.find(n => /tiger\s*team/i.test(n))
+  if (!sheetName) return new Map()
+  const ws = wb.Sheets[sheetName]
+  if (!ws) return new Map()
+  const rows = xlsx.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
+  const headerIdx = rows.findIndex(r => (r || []).some(c => /^customer$/i.test(String(c ?? '').trim())))
+  if (headerIdx === -1) return new Map()
+  const headers = (rows[headerIdx] || []).map(normalize)
+  const custIdx = headers.findIndex(h => /^customer$/i.test(h))
+  if (custIdx === -1) return new Map()
+  // "# of Relevant Attributed Files" — but NOT "# of Not Relevant Attributed Files".
+  const releIdx = headers.findIndex(h => /relevant\s*attributed\s*files/i.test(h) && !/not\s*relevant/i.test(h))
+  // "# of Extracted Files" — but NOT "# of Extracted Records".
+  const extractedIdx = headers.findIndex(h => /extracted\s*files/i.test(h))
+  // "Extraction % Completion" / "% Extraction Complete".
+  const pctIdx = headers.findIndex(h => /extraction/i.test(h) && /complet/i.test(h))
+  const fmtPct = (v) => {
+    if (v == null || v === '') return null
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      const p = v <= 1 ? v * 100 : v
+      return `${Math.round(p)}%`
+    }
+    const s = String(v).trim()
+    return s || null
+  }
+  const map = new Map()
+  for (let r = headerIdx + 1; r < rows.length; r++) {
+    const row = rows[r]
+    if (!row) continue
+    const cust = normalize(row[custIdx])
+    if (!cust) continue
+    const cur = map.get(cust) || { rele: null, extracted: null, extractionPct: null }
+    if (releIdx !== -1) { const v = Number(row[releIdx]); if (Number.isFinite(v)) cur.rele = (cur.rele || 0) + v }
+    if (extractedIdx !== -1) { const v = Number(row[extractedIdx]); if (Number.isFinite(v)) cur.extracted = (cur.extracted || 0) + v }
+    if (cur.extractionPct == null && pctIdx !== -1) cur.extractionPct = fmtPct(row[pctIdx])
+    map.set(cust, cur)
+  }
+  return map
 }
 
 // The Priority Customer Tracker has a title/section banner above the real
@@ -346,6 +410,10 @@ export async function getTriageBuckets() {
   // the Internal Ops Team Tracker. Drives Step 1 for both the bucket override
   // above and the per-row currentStep below.
   const step1Set = step1Override?.membership ?? new Set(step1Override ? step1Override.customers : [])
+  // Per-customer SIFT files from the Ops tracker's "# of Validated SIFT Files in GCP" (col W).
+  const opsSiftFiles = step1Override?.siftFilesByName ?? new Map()
+  // Per-customer Tiger Team metrics — onHold (col R, "RELE") + extraction %.
+  const tigerMetrics = loadTigerMetrics(wb)
   // Customer → furthest meeting tag ("M0".."M3") from the "Furthest Meeting
   // Completed" column, used to annotate names in the Customer Interaction Workflow.
   const furthestByCustomer = {}
@@ -468,6 +536,7 @@ export async function getTriageBuckets() {
     if (rawReq instanceof Date) requestDate = rawReq.toISOString().slice(0, 10)
     else if (typeof rawReq === 'number') requestDate = excelSerialToISO(rawReq)
     else if (typeof rawReq === 'string' && rawReq.trim()) requestDate = rawReq.trim()
+    const tg = tigerMetrics.get(customer) ?? (uniqueName ? tigerMetrics.get(uniqueName) : undefined)
     details.push({
       customer,
       priorityOrder: priorityIdx !== -1 ? num(row[priorityIdx]) : null,
@@ -475,11 +544,14 @@ export async function getTriageBuckets() {
       daysActive: daysActiveIdx !== -1 ? num(row[daysActiveIdx]) : null,
       sentiment: sentimentIdx !== -1 ? normalize(row[sentimentIdx]) : '',
       currentStep,
-      siftFiles: siftFilesCol != null ? num(row[siftFilesCol]) : null,
+      siftFiles: (opsSiftFiles.get(customer) ?? (uniqueName ? opsSiftFiles.get(uniqueName) : undefined))
+        ?? (siftFilesCol != null ? num(row[siftFilesCol]) : null),
+      releFiles: tg?.rele ?? null,
+      extractionPct: tg?.extractionPct ?? null,
       copiedFiles: copiedFilesCol != null ? num(row[copiedFilesCol]) : null,
       reattributedFiles: reattributedIdx !== -1 ? num(row[reattributedIdx]) : null,
       attributedFiles: attributedIdx !== -1 ? num(row[attributedIdx]) : null,
-      extractedFiles: extractedFilesCol != null ? num(row[extractedFilesCol]) : null,
+      extractedFiles: tg?.extracted ?? (extractedFilesCol != null ? num(row[extractedFilesCol]) : null),
       outreachStatus: stepCols[5] != null ? normalize(row[stepCols[5]]) : '',
       crmLiaison: crmIdx !== -1 ? normalize(row[crmIdx]) : '',
       businessLine: businessLineIdx !== -1 ? normalize(row[businessLineIdx]) : '',
