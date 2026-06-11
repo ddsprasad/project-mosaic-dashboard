@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.6
+# Builds the Mosaic Analytics Executive Report (exec-report/) and serves it with
+# the SAME shared backend (backend/). Build context is the repo root so the
+# frontend stage can see both exec-report/ and shared/ (exec-report imports @shared).
+
+# Stage 1: build the exec-report frontend
+FROM node:20-alpine AS frontend
+WORKDIR /app
+COPY exec-report/package.json exec-report/package-lock.json* ./exec-report/
+RUN cd exec-report && npm install
+COPY shared/ ./shared/
+COPY exec-report/ ./exec-report/
+RUN cd exec-report && npm run build
+
+# Stage 2: install backend deps (prod only) — shared backend
+FROM node:20-alpine AS backend-deps
+WORKDIR /app/backend
+COPY backend/package.json backend/package-lock.json* ./
+RUN npm install --omit=dev
+
+# Stage 3: runtime — shared backend serving the exec-report build
+FROM node:20-alpine
+ENV NODE_ENV=production
+ENV STATIC_DIR=/app/exec-report/dist
+WORKDIR /app/backend
+COPY --from=backend-deps /app/backend/node_modules ./node_modules
+COPY backend/ ./
+COPY --from=frontend /app/exec-report/dist /app/exec-report/dist
+EXPOSE 8080
+CMD ["node", "server.js"]

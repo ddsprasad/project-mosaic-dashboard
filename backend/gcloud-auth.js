@@ -23,8 +23,9 @@ function runGcloud(args) {
 }
 
 export class GcloudCliAuthClient extends AuthClient {
-  constructor() {
+  constructor(account) {
     super()
+    this._account = account || null
     this._token = null
     this._expiry = 0
     this._inflight = null
@@ -34,7 +35,9 @@ export class GcloudCliAuthClient extends AuthClient {
     if (this._inflight) return this._inflight
     this._inflight = (async () => {
       try {
-        const token = await runGcloud(['auth', 'print-access-token'])
+        const args = ['auth', 'print-access-token']
+        if (this._account) args.push('--account', this._account)
+        const token = await runGcloud(args)
         this._token = token
         this._expiry = Date.now() + ASSUMED_LIFETIME_MS
         return token

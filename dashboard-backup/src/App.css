@@ -418,10 +418,6 @@
 .app.light .dc-toggle button.active { background: #6d28d9; color: #fff; }
 
 .dc-chart-wrap { flex: 1; min-height: 200px; margin-top: 6px; }
-/* Standalone Data Complexion page (?view=complexion): make the card fill the
-   viewport so the chart container has a real height (recharts needs it). */
-.dc-standalone { height: 100vh; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; }
-.dc-standalone > .card { flex: 1; min-height: 0; }
 .dc-tip {
   background: #0f1117; border: 1px solid rgba(255,255,255,0.16); border-radius: 6px;
   padding: 8px 10px; font-size: 11px; color: #e5e7eb; box-shadow: 0 4px 16px rgba(0,0,0,0.4);

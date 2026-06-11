@@ -21,3 +21,7 @@ npm-debug.log*
 *.pem
 service-account*.json
 gcp-credentials*.json
+
+# data / backups (customer tracker is sensitive; app fetches it from GCS)
+*.xlsx
+*.bak
